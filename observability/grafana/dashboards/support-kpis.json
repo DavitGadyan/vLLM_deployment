@@ -1,0 +1,380 @@
+{
+  "uid": "support-product-kpis",
+  "title": "Support Assistant — Product KPIs",
+  "description": "Whether the assistant is actually useful. The serving dashboard says the GPU is healthy; this one says customers are being helped. A system can be green on every infrastructure metric and still be deflecting nothing.",
+  "tags": ["support-assistant", "product"],
+  "timezone": "browser",
+  "schemaVersion": 39,
+  "version": 1,
+  "refresh": "1m",
+  "time": { "from": "now-24h", "to": "now" },
+  "templating": {
+    "list": [
+      {
+        "name": "datasource",
+        "type": "datasource",
+        "query": "prometheus",
+        "current": {},
+        "hide": 0
+      },
+      {
+        "name": "namespace",
+        "type": "query",
+        "datasource": { "type": "prometheus", "uid": "${datasource}" },
+        "query": "label_values(support_chat_requests_total, namespace)",
+        "current": { "text": "support", "value": "support" },
+        "refresh": 1
+      }
+    ]
+  },
+  "panels": [
+    {
+      "type": "row",
+      "title": "Headline",
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 0 }
+    },
+    {
+      "id": 1,
+      "type": "stat",
+      "title": "Deflection rate",
+      "description": "Share of conversations answered without a human. This is the number the system exists to move. Defined here rather than in the exporter so it can be changed without a redeploy.",
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "gridPos": { "h": 6, "w": 5, "x": 0, "y": 1 },
+      "targets": [
+        {
+          "expr": "sum(rate(support_chat_requests_total{namespace=\"$namespace\", outcome=\"answered\"}[$__range])) / clamp_min(sum(rate(support_chat_requests_total{namespace=\"$namespace\", outcome=~\"answered|escalated\"}[$__range])), 0.0001)",
+          "legendFormat": "deflected"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit",
+          "decimals": 1,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "red", "value": null },
+              { "color": "yellow", "value": 0.5 },
+              { "color": "green", "value": 0.7 }
+            ]
+          }
+        }
+      },
+      "options": { "colorMode": "value", "graphMode": "area", "textMode": "auto" }
+    },
+    {
+      "id": 2,
+      "type": "stat",
+      "title": "Conversations",
+      "description": "Total chat requests in the selected window.",
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "gridPos": { "h": 6, "w": 4, "x": 5, "y": 1 },
+      "targets": [
+        {
+          "expr": "sum(increase(support_chat_requests_total{namespace=\"$namespace\"}[$__range]))",
+          "legendFormat": "total"
+        }
+      ],
+      "fieldConfig": { "defaults": { "unit": "short", "decimals": 0 } },
+      "options": { "colorMode": "none", "graphMode": "area" }
+    },
+    {
+      "id": 3,
+      "type": "stat",
+      "title": "Answers with citations",
+      "description": "Answers that pointed to a source document. Uncited answers cannot be verified by the customer or audited afterwards, and are where invented policy details show up.",
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "gridPos": { "h": 6, "w": 5, "x": 9, "y": 1 },
+      "targets": [
+        {
+          "expr": "sum(increase(support_answers_with_citations_total{namespace=\"$namespace\"}[$__range])) / clamp_min(sum(increase(support_chat_requests_total{namespace=\"$namespace\", outcome=\"answered\"}[$__range])), 0.0001)",
+          "legendFormat": "cited"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit",
+          "decimals": 1,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "red", "value": null },
+              { "color": "yellow", "value": 0.6 },
+              { "color": "green", "value": 0.8 }
+            ]
+          }
+        }
+      },
+      "options": { "colorMode": "value", "graphMode": "area" }
+    },
+    {
+      "id": 4,
+      "type": "stat",
+      "title": "End-to-end p95",
+      "description": "Complete answer latency as the customer experiences it, including retrieval.",
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "gridPos": { "h": 6, "w": 5, "x": 14, "y": 1 },
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.95, sum by (le) (rate(support_chat_duration_seconds_bucket{namespace=\"$namespace\"}[10m])))",
+          "legendFormat": "p95"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "decimals": 1,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "yellow", "value": 10 },
+              { "color": "red", "value": 20 }
+            ]
+          }
+        }
+      },
+      "options": { "colorMode": "value", "graphMode": "area" }
+    },
+    {
+      "id": 5,
+      "type": "stat",
+      "title": "Active config version",
+      "description": "Which configuration is answering. Every conversation records this, so a quality change can be attributed to a specific save.",
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "gridPos": { "h": 6, "w": 5, "x": 19, "y": 1 },
+      "targets": [
+        {
+          "expr": "max(support_active_config_version{namespace=\"$namespace\"})",
+          "legendFormat": "version"
+        }
+      ],
+      "fieldConfig": { "defaults": { "unit": "short", "decimals": 0 } },
+      "options": { "colorMode": "none", "graphMode": "none", "textMode": "value" }
+    },
+    {
+      "type": "row",
+      "title": "Escalation — why the assistant hands off",
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 7 }
+    },
+    {
+      "id": 10,
+      "type": "timeseries",
+      "title": "Escalations by reason",
+      "description": "Each reason points somewhere different. low_retrieval_confidence: the knowledge base does not cover what customers ask. no_documents: nothing is indexed. model_sentinel: retrieval found something but the model judged it insufficient. upstream_error: infrastructure, not product.",
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 8 },
+      "targets": [
+        {
+          "expr": "sum by (reason) (rate(support_escalations_total{namespace=\"$namespace\"}[10m]))",
+          "legendFormat": "{{reason}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": {
+            "lineWidth": 1,
+            "fillOpacity": 25,
+            "showPoints": "never",
+            "stacking": { "mode": "normal" }
+          }
+        }
+      },
+      "options": { "legend": { "displayMode": "table", "placement": "right", "calcs": ["sum"] } }
+    },
+    {
+      "id": 11,
+      "type": "piechart",
+      "title": "Escalation reasons",
+      "description": "Proportional breakdown over the selected window.",
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 8 },
+      "targets": [
+        {
+          "expr": "sum by (reason) (increase(support_escalations_total{namespace=\"$namespace\"}[$__range]))",
+          "legendFormat": "{{reason}}"
+        }
+      ],
+      "options": {
+        "legend": { "displayMode": "table", "placement": "right", "values": ["value", "percent"] },
+        "pieType": "donut"
+      }
+    },
+    {
+      "type": "row",
+      "title": "Retrieval quality",
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 16 }
+    },
+    {
+      "id": 20,
+      "type": "timeseries",
+      "title": "Best-match relevance score",
+      "description": "Cosine similarity of the top-ranked chunk. The dashed line is the escalation floor — questions landing below it never reach the model. A drifting distribution means the questions being asked have moved away from what the knowledge base covers.",
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 17 },
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.50, sum by (le) (rate(support_retrieval_top_score_bucket{namespace=\"$namespace\"}[10m])))",
+          "legendFormat": "p50"
+        },
+        {
+          "expr": "histogram_quantile(0.10, sum by (le) (rate(support_retrieval_top_score_bucket{namespace=\"$namespace\"}[10m])))",
+          "legendFormat": "p10 (worst matches)"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "min": 0,
+          "max": 1,
+          "custom": { "lineWidth": 1, "fillOpacity": 10, "showPoints": "never" },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "red", "value": null },
+              { "color": "green", "value": 0.35 }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "id": 21,
+      "type": "timeseries",
+      "title": "Retrieval latency",
+      "description": "Embedding the query plus the pgvector search. A step change usually means the HNSW index stopped being used — check Cloud SQL query insights for a sequential scan.",
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 17 },
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.50, sum by (le) (rate(support_retrieval_duration_seconds_bucket{namespace=\"$namespace\"}[10m])))",
+          "legendFormat": "p50"
+        },
+        {
+          "expr": "histogram_quantile(0.95, sum by (le) (rate(support_retrieval_duration_seconds_bucket{namespace=\"$namespace\"}[10m])))",
+          "legendFormat": "p95"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "custom": { "lineWidth": 1, "fillOpacity": 10, "showPoints": "never" }
+        }
+      }
+    },
+    {
+      "id": 22,
+      "type": "timeseries",
+      "title": "Chunks entering the prompt",
+      "description": "How many retrieved passages cleared the relevance floor and the context budget. Persistent zeros mean retrieval is finding nothing usable.",
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "gridPos": { "h": 7, "w": 12, "x": 0, "y": 25 },
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.50, sum by (le) (rate(support_retrieval_chunks_used_bucket{namespace=\"$namespace\"}[10m])))",
+          "legendFormat": "median chunks used"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": { "lineWidth": 1, "fillOpacity": 15, "showPoints": "never" }
+        }
+      }
+    },
+    {
+      "id": 23,
+      "type": "timeseries",
+      "title": "Knowledge base ingestion",
+      "description": "Documents indexed and failed. Failures are almost always scanned PDFs with no extractable text.",
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "gridPos": { "h": 7, "w": 12, "x": 12, "y": 25 },
+      "targets": [
+        {
+          "expr": "sum by (status) (increase(support_documents_ingested_total{namespace=\"$namespace\"}[1h]))",
+          "legendFormat": "{{status}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": { "lineWidth": 1, "fillOpacity": 20, "showPoints": "never" }
+        }
+      }
+    },
+    {
+      "type": "row",
+      "title": "Cost and prompt economics",
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 32 }
+    },
+    {
+      "id": 30,
+      "type": "timeseries",
+      "title": "Prompt size distribution",
+      "description": "Total assembled prompt length. Every token here is prefill work paid on every request, so growth directly costs latency. Compare against the prefix-token gauge below: the difference is the part that cannot be cached.",
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 33 },
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.50, sum by (le) (rate(support_prompt_total_tokens_bucket{namespace=\"$namespace\"}[10m])))",
+          "legendFormat": "p50 total prompt"
+        },
+        {
+          "expr": "histogram_quantile(0.95, sum by (le) (rate(support_prompt_total_tokens_bucket{namespace=\"$namespace\"}[10m])))",
+          "legendFormat": "p95 total prompt"
+        },
+        {
+          "expr": "max(support_prompt_prefix_tokens{namespace=\"$namespace\"})",
+          "legendFormat": "cacheable prefix (system prompt)"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": { "lineWidth": 1, "fillOpacity": 5, "showPoints": "never" }
+        }
+      }
+    },
+    {
+      "id": 31,
+      "type": "timeseries",
+      "title": "Token consumption",
+      "description": "Prompt versus completion tokens through the gateway. Multiply by your GPU-hour cost divided by throughput to get cost per conversation.",
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 33 },
+      "targets": [
+        {
+          "expr": "sum by (direction) (rate(support_chat_tokens_total{namespace=\"$namespace\"}[10m]))",
+          "legendFormat": "{{direction}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": { "lineWidth": 1, "fillOpacity": 10, "showPoints": "never" }
+        }
+      }
+    },
+    {
+      "id": 32,
+      "type": "timeseries",
+      "title": "Configuration changes",
+      "description": "Config activations overlaid on this dashboard's other panels. Annotating deflection or escalation changes against a specific save is how you tell whether a prompt edit helped.",
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "gridPos": { "h": 6, "w": 24, "x": 0, "y": 41 },
+      "targets": [
+        {
+          "expr": "increase(support_config_activations_total{namespace=\"$namespace\"}[5m])",
+          "legendFormat": "activations"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": { "lineWidth": 1, "fillOpacity": 30, "showPoints": "never", "drawStyle": "bars" }
+        }
+      }
+    }
+  ]
+}

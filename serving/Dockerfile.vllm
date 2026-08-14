@@ -1,0 +1,29 @@
+# vLLM serving image.
+#
+# Thin layer over the official image: it contributes the tuned entrypoint and
+# nothing else. Model weights are NOT baked in here — they arrive from the
+# separately versioned model image (model/Dockerfile.model) via an initContainer,
+# so a serving-config change does not force a 5.5 GB re-push.
+
+FROM vllm/vllm-openai:v0.27.1
+
+# curl is needed for the container healthcheck / K8s probes.
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends curl \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY entrypoint.sh /usr/local/bin/entrypoint.sh
+RUN chmod +x /usr/local/bin/entrypoint.sh
+
+ENV MODEL_PATH=/models/qwen2.5-7b-instruct-w4a16 \
+    SERVED_MODEL_NAME=qwen-support \
+    PORT=8000 \
+    HOST=0.0.0.0
+
+EXPOSE 8000
+
+HEALTHCHECK --interval=15s --timeout=5s --start-period=180s --retries=10 \
+    CMD curl -fsS http://localhost:8000/health || exit 1
+
+# Override the base image's entrypoint, which invokes `vllm serve` directly.
+ENTRYPOINT ["/usr/local/bin/entrypoint.sh"]

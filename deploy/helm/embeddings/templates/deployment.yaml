@@ -1,0 +1,84 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "embeddings.fullname" . }}
+  labels:
+    {{- include "embeddings.labels" . | nindent 4 }}
+spec:
+  {{- if not .Values.autoscaling.enabled }}
+  replicas: {{ .Values.replicaCount }}
+  {{- end }}
+  selector:
+    matchLabels:
+      {{- include "embeddings.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- /* embeddings.labels already contains the selector labels; emitting
+               both produces duplicate YAML keys the API server rejects. */}}
+        {{- include "embeddings.labels" . | nindent 8 }}
+      {{- with .Values.podAnnotations }}
+      annotations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+    spec:
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+
+      containers:
+        - name: embeddings
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+
+          args:
+            - "--model-id"
+            - {{ .Values.model.id | quote }}
+            - "--port"
+            - "8001"
+
+          ports:
+            - name: http
+              containerPort: 8001
+              protocol: TCP
+
+          {{- if .Values.modelCache.enabled }}
+          volumeMounts:
+            - name: model-cache
+              mountPath: /data
+          {{- end }}
+
+          # First start downloads the model; the startup probe carries that,
+          # so readiness can stay tight afterwards.
+          startupProbe:
+            httpGet:
+              path: /health
+              port: http
+            failureThreshold: 30
+            periodSeconds: 5
+
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: http
+            periodSeconds: 10
+            timeoutSeconds: 3
+
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: http
+            periodSeconds: 20
+            timeoutSeconds: 5
+            failureThreshold: 3
+
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+
+      {{- if .Values.modelCache.enabled }}
+      volumes:
+        - name: model-cache
+          emptyDir:
+            sizeLimit: {{ .Values.modelCache.size }}
+      {{- end }}

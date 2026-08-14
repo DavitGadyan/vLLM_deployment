@@ -1,0 +1,174 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "vllm.fullname" . }}
+  labels:
+    {{- include "vllm.labels" . | nindent 4 }}
+spec:
+  {{- if not .Values.autoscaling.enabled }}
+  replicas: {{ .Values.replicaCount }}
+  {{- end }}
+  selector:
+    matchLabels:
+      {{- include "vllm.selectorLabels" . | nindent 6 }}
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      # Never take a replica down before its replacement is serving: with
+      # minutes-long startup, maxUnavailable > 0 means a real capacity gap.
+      maxUnavailable: 0
+      maxSurge: 1
+  template:
+    metadata:
+      labels:
+        {{- /* vllm.labels already contains the selector labels; emitting both
+               produces duplicate YAML keys that the API server rejects. */}}
+        {{- include "vllm.labels" . | nindent 8 }}
+      annotations:
+        {{- with .Values.podAnnotations }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+        # Cluster autoscaler must be free to drain GPU nodes when scaling in;
+        # the emptyDir below would otherwise block eviction.
+        cluster-autoscaler.kubernetes.io/safe-to-evict: "true"
+    spec:
+      serviceAccountName: {{ include "vllm.serviceAccountName" . }}
+      terminationGracePeriodSeconds: {{ .Values.terminationGracePeriodSeconds }}
+
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+
+      {{- if .Values.topologySpreadConstraints.enabled }}
+      topologySpreadConstraints:
+        - maxSkew: {{ .Values.topologySpreadConstraints.maxSkew }}
+          topologyKey: topology.kubernetes.io/zone
+          # Schedulable is better than balanced: if one zone is out of L4
+          # capacity, a pod should still start in another rather than pend.
+          whenUnsatisfiable: ScheduleAnyway
+          labelSelector:
+            matchLabels:
+              {{- include "vllm.selectorLabels" . | nindent 14 }}
+      {{- end }}
+
+      securityContext:
+        runAsNonRoot: false # vLLM's CUDA init requires root in the official image
+        fsGroup: 1000
+
+      initContainers:
+        # Stages the quantized weights from the model image into a shared
+        # volume. Copying from a local image layer takes seconds; downloading
+        # the same bytes from object storage takes minutes and would gate every
+        # autoscaling event on it.
+        - name: stage-model
+          image: "{{ .Values.modelImage.repository }}:{{ .Values.modelImage.tag }}"
+          imagePullPolicy: {{ .Values.modelImage.pullPolicy }}
+          command: ["/bin/sh", "-c"]
+          args:
+            - |
+              set -e
+              cp -a /models/. /shared-models/
+              echo "staged $(du -sh /shared-models | cut -f1) of weights"
+          volumeMounts:
+            - name: models
+              mountPath: /shared-models
+          resources:
+            requests:
+              cpu: "500m"
+              memory: 512Mi
+            limits:
+              memory: 1Gi
+
+      containers:
+        - name: vllm
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+
+          ports:
+            - name: http
+              containerPort: 8000
+              protocol: TCP
+
+          env:
+            - name: MODEL_PATH
+              value: {{ .Values.model.path | quote }}
+            - name: SERVED_MODEL_NAME
+              value: {{ .Values.model.servedName | quote }}
+            - name: MAX_MODEL_LEN
+              value: {{ .Values.model.maxModelLen | quote }}
+            - name: GPU_MEMORY_UTILIZATION
+              value: {{ .Values.serving.gpuMemoryUtilization | quote }}
+            - name: MAX_NUM_SEQS
+              value: {{ .Values.serving.maxNumSeqs | quote }}
+            - name: MAX_NUM_BATCHED_TOKENS
+              value: {{ .Values.serving.maxNumBatchedTokens | quote }}
+            - name: KV_CACHE_DTYPE
+              value: {{ .Values.serving.kvCacheDtype | quote }}
+            - name: DISABLE_LOG_REQUESTS
+              value: {{ .Values.serving.disableLogRequests | quote }}
+            {{- with .Values.serving.extraArgs }}
+            - name: EXTRA_VLLM_ARGS
+              value: {{ . | quote }}
+            {{- end }}
+            - name: VLLM_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.apiKey.secretName }}
+                  key: {{ .Values.apiKey.secretKey }}
+
+          volumeMounts:
+            - name: models
+              mountPath: /models
+              readOnly: true
+            - name: dshm
+              mountPath: /dev/shm
+
+          # Startup probe carries the long load; readiness and liveness only
+          # start once it passes, so they can use tight, meaningful timings.
+          startupProbe:
+            httpGet:
+              path: /health
+              port: http
+            failureThreshold: {{ .Values.probes.startup.failureThreshold }}
+            periodSeconds: {{ .Values.probes.startup.periodSeconds }}
+
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: http
+            periodSeconds: {{ .Values.probes.readiness.periodSeconds }}
+            timeoutSeconds: {{ .Values.probes.readiness.timeoutSeconds }}
+
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: http
+            periodSeconds: {{ .Values.probes.liveness.periodSeconds }}
+            timeoutSeconds: {{ .Values.probes.liveness.timeoutSeconds }}
+            failureThreshold: {{ .Values.probes.liveness.failureThreshold }}
+
+          lifecycle:
+            preStop:
+              exec:
+                # Let in-flight generations finish and the endpoint deregister
+                # before SIGTERM. Without this, a rolling update truncates
+                # responses mid-stream for whoever is connected.
+                command: ["/bin/sh", "-c", "sleep 20"]
+
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+
+      volumes:
+        - name: models
+          emptyDir:
+            sizeLimit: 30Gi
+        - name: dshm
+          emptyDir:
+            medium: Memory
+            sizeLimit: {{ .Values.shmSize }}

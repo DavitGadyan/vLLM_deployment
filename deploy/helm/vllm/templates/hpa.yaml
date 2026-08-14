@@ -1,0 +1,60 @@
+{{- if .Values.autoscaling.enabled }}
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: {{ include "vllm.fullname" . }}
+  labels:
+    {{- include "vllm.labels" . | nindent 4 }}
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: {{ include "vllm.fullname" . }}
+  minReplicas: {{ .Values.autoscaling.minReplicas }}
+  maxReplicas: {{ .Values.autoscaling.maxReplicas }}
+
+  metrics:
+    # Queue depth, not CPU.
+    #
+    # This is the single most important decision in the autoscaling setup. A
+    # saturated vLLM replica has a busy GPU and an unremarkable CPU — the
+    # process spends its time waiting on CUDA. A CPU-target HPA therefore sits
+    # quietly at 30% while requests queue and p95 latency climbs, and never
+    # scales at all.
+    #
+    # `vllm:num_requests_waiting` is the engine's own count of requests admitted
+    # but not yet being decoded. It rises the moment a replica runs out of
+    # capacity, which is exactly when another replica is needed.
+    #
+    # Requires prometheus-adapter to expose it; see
+    # observability/prometheus/adapter-values.yaml.
+    - type: Pods
+      pods:
+        metric:
+          name: vllm_num_requests_waiting
+        target:
+          type: AverageValue
+          averageValue: {{ .Values.autoscaling.targetQueueDepth | quote }}
+
+  behavior:
+    scaleUp:
+      # React immediately. A GPU replica takes minutes to become ready, so
+      # every second of stabilisation delay is a second added to how long the
+      # queue stays deep.
+      stabilizationWindowSeconds: {{ .Values.autoscaling.scaleUpStabilizationSeconds }}
+      policies:
+        - type: Pods
+          value: 2
+          periodSeconds: 60
+      selectPolicy: Max
+    scaleDown:
+      # Retreat slowly. Removing a replica that is needed again shortly costs
+      # another multi-minute cold start, which is far worse than briefly paying
+      # for idle capacity.
+      stabilizationWindowSeconds: {{ .Values.autoscaling.scaleDownStabilizationSeconds }}
+      policies:
+        - type: Pods
+          value: 1
+          periodSeconds: 300
+      selectPolicy: Min
+{{- end }}

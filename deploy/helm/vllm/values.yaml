@@ -1,0 +1,129 @@
+# vLLM serving values.
+#
+# The tuning knobs mirror serving/entrypoint.sh; see that file for the KV-cache
+# arithmetic behind max-num-seqs and the reasoning about kvCacheDtype.
+
+replicaCount: 1
+
+image:
+  repository: REGISTRY/support-vllm
+  tag: latest
+  pullPolicy: IfNotPresent
+
+# Weights ship as their own image and are staged into an emptyDir by an
+# initContainer. Separate from the serving image so a config change does not
+# force a 5.5 GB re-push, and baked into an image rather than downloaded at
+# startup so a scale-up is not gated on a GCS transfer.
+modelImage:
+  repository: REGISTRY/support-model
+  tag: latest
+  pullPolicy: IfNotPresent
+
+serviceAccount:
+  create: true
+  name: support-vllm
+  # Set from `terraform output vllm_service_account`.
+  annotations: {}
+  # iam.gke.io/gcp-service-account: support-prod-vllm@PROJECT.iam.gserviceaccount.com
+
+model:
+  path: /models/qwen2.5-7b-instruct-w4a16
+  servedName: qwen-support
+  maxModelLen: 8192
+
+serving:
+  gpuMemoryUtilization: "0.90"
+  maxNumSeqs: 64
+  maxNumBatchedTokens: 8192
+  # "auto" (fp16) or "fp8". fp8 halves KV memory but can fall off the fastest
+  # attention path — benchmark with load-test/k6 before changing.
+  kvCacheDtype: auto
+  disableLogRequests: true
+  extraArgs: ""
+
+apiKey:
+  # Mounted from a Kubernetes Secret synced from Secret Manager.
+  secretName: support-vllm-api-key
+  secretKey: api-key
+
+service:
+  type: ClusterIP
+  port: 8000
+
+resources:
+  limits:
+    nvidia.com/gpu: 1
+    # No CPU limit: throttling the scheduler/tokenizer thread stalls decode for
+    # every in-flight sequence on the GPU. The GPU is the scarce resource here
+    # and it is already exclusively allocated.
+    memory: 24Gi
+  requests:
+    nvidia.com/gpu: 1
+    cpu: "4"
+    memory: 16Gi
+
+nodeSelector:
+  cloud.google.com/gke-accelerator: nvidia-l4
+
+tolerations:
+  - key: nvidia.com/gpu
+    operator: Equal
+    value: present
+    effect: NoSchedule
+
+# Spread replicas across zones so a single zone losing GPU capacity does not
+# take out the whole serving tier.
+topologySpreadConstraints:
+  enabled: true
+  maxSkew: 1
+
+probes:
+  # Weight loading plus CUDA graph capture takes minutes. A startup probe with
+  # a generous budget is what keeps Kubernetes from killing a pod that is
+  # simply still loading.
+  startup:
+    failureThreshold: 60
+    periodSeconds: 10
+  readiness:
+    periodSeconds: 10
+    timeoutSeconds: 5
+  liveness:
+    periodSeconds: 20
+    timeoutSeconds: 10
+    failureThreshold: 6
+
+autoscaling:
+  enabled: true
+  minReplicas: 1
+  maxReplicas: 6
+  # Scales on queue depth, not CPU. A saturated vLLM pod sits at modest CPU
+  # while requests pile up, so a CPU-based HPA would never fire.
+  targetQueueDepth: "4"
+  scaleUpStabilizationSeconds: 0
+  # Long scale-down window: a replica takes minutes to replace, so removing one
+  # during a lull that turns out to be temporary is expensive.
+  scaleDownStabilizationSeconds: 600
+
+podDisruptionBudget:
+  enabled: true
+  minAvailable: 1
+
+serviceMonitor:
+  enabled: true
+  interval: 15s
+
+# Only the backend may reach the model. Nothing else in the cluster, and
+# nothing outside it.
+networkPolicy:
+  enabled: true
+  allowFromLabels:
+    app.kubernetes.io/name: support-backend
+
+# vLLM writes CUDA graphs and compiled artifacts to shared memory; the 64 MB
+# Kubernetes default causes hard-to-diagnose crashes during graph capture.
+shmSize: 8Gi
+
+# Weight loading is heavy I/O and CUDA init; the default 30s is not enough.
+terminationGracePeriodSeconds: 120
+
+podAnnotations: {}

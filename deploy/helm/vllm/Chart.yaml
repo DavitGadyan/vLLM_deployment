@@ -1,0 +1,6 @@
+apiVersion: v2
+name: support-vllm
+description: Qwen2.5-7B-Instruct W4A16 served by vLLM on NVIDIA L4
+type: application
+version: 0.1.0
+appVersion: "0.27.1"

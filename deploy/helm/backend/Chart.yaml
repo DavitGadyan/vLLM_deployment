@@ -1,0 +1,6 @@
+apiVersion: v2
+name: support-backend
+description: FastAPI gateway — prompt compilation, retrieval, guardrails, metrics
+type: application
+version: 0.1.0
+appVersion: "0.1.0"

@@ -1,0 +1,36 @@
+# OPT-IN: 2:4 semi-structured pruning layered under INT4 quantization.
+#
+# ---------------------------------------------------------------------------
+# READ THIS BEFORE USING IN PRODUCTION
+# ---------------------------------------------------------------------------
+# 2:4 sparsity zeroes two of every four contiguous weights so Ampere+ sparse
+# tensor cores can skip them. On a 7B model, one-shot SparseGPT at this ratio
+# reliably costs real quality — expect visible regressions in instruction
+# following and in faithfulness to retrieved policy text, which is exactly what
+# a support assistant cannot afford.
+#
+# The honest workflow is:
+#   1. make quantize-sparse
+#   2. make evaluate  — expect the gate to FAIL against the default thresholds
+#   3. run a recovery finetune (SFT on support-domain data with the sparsity
+#      mask held fixed) before re-evaluating
+#
+# The default pipeline (recipes/w4a16.yaml) does not use this. It exists so the
+# pruning path is ready when you want to spend the finetuning budget on it.
+# ---------------------------------------------------------------------------
+
+sparsity_stage:
+  sparsity_modifiers:
+    SparseGPTModifier:
+      sparsity: 0.5
+      mask_structure: "2:4"
+      targets: ["Linear"]
+      ignore: ["lm_head"]
+
+quantization_stage:
+  quantization_modifiers:
+    GPTQModifier:
+      targets: ["Linear"]
+      scheme: W4A16
+      ignore: ["lm_head"]
+      dampening_frac: 0.01

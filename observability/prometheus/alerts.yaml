@@ -1,0 +1,282 @@
+# Prometheus alerting rules.
+#
+# Every rule here should be actionable. An alert that fires and leaves the
+# on-call with nothing to do trains people to ignore the channel, which is
+# worse than not having the alert. Each one carries a runbook line saying what
+# to actually check.
+#
+# Apply:
+#   kubectl apply -f observability/prometheus/alerts.yaml -n monitoring
+
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: support-assistant
+  namespace: monitoring
+  labels:
+    release: kube-prometheus-stack
+spec:
+  groups:
+    # =====================================================================
+    # Serving health
+    # =====================================================================
+    - name: support-serving
+      interval: 30s
+      rules:
+        - alert: VLLMHighTimeToFirstToken
+          expr: |
+            histogram_quantile(0.95,
+              sum by (le) (rate(vllm:time_to_first_token_seconds_bucket[5m]))
+            ) > 2
+          for: 5m
+          labels:
+            severity: warning
+            component: vllm
+          annotations:
+            summary: "p95 time-to-first-token above 2s"
+            description: >-
+              p95 TTFT is {{ $value | humanizeDuration }}. Users experience this
+              as the assistant hesitating before it starts typing.
+            runbook: >-
+              Check queue depth and KV cache utilisation on the serving
+              dashboard. Rising queue depth means the HPA is not keeping up —
+              verify it can read vllm_num_requests_waiting. Flat queue with
+              high TTFT usually means prompt sizes grew: check whether a config
+              change enlarged the system prompt or retrieval top_k was raised.
+
+        - alert: VLLMKVCacheNearlyFull
+          expr: vllm:gpu_cache_usage_perc > 0.9
+          for: 5m
+          labels:
+            severity: warning
+            component: vllm
+          annotations:
+            summary: "GPU KV cache above 90% on {{ $labels.pod }}"
+            description: >-
+              KV cache is {{ $value | humanizePercentage }} full. Past this
+              point vLLM starts preempting sequences, which shows up to users
+              as responses that stall mid-sentence.
+            runbook: >-
+              Confirm with vllm:num_preemptions_total. If preemption is
+              occurring, max-num-seqs is set above what the cache can hold —
+              lower it, or scale out. Enabling fp8 KV cache roughly doubles
+              capacity but must be benchmarked for its latency effect first.
+
+        - alert: VLLMPreemptingRequests
+          expr: rate(vllm:num_preemptions_total[5m]) > 0.1
+          for: 5m
+          labels:
+            severity: warning
+            component: vllm
+          annotations:
+            summary: "vLLM is preempting requests on {{ $labels.pod }}"
+            description: >-
+              Sequences are being evicted and recomputed, wasting GPU work and
+              adding latency to conversations already in progress.
+            runbook: >-
+              max-num-seqs exceeds real KV capacity. Reduce it in the vllm Helm
+              values, or add replicas. See the sizing arithmetic in
+              serving/entrypoint.sh.
+
+        - alert: VLLMQueueBacklog
+          expr: vllm:num_requests_waiting > 10
+          for: 10m
+          labels:
+            severity: critical
+            component: vllm
+          annotations:
+            summary: "Sustained request backlog on {{ $labels.pod }}"
+            description: >-
+              {{ $value }} requests waiting for 10 minutes. The HPA should have
+              added capacity by now.
+            runbook: >-
+              First check the HPA can see the metric:
+              kubectl get --raw
+              "/apis/custom.metrics.k8s.io/v1beta1/namespaces/support/pods/*/vllm_num_requests_waiting"
+              If that fails, prometheus-adapter is the problem, not vLLM. If it
+              works, check whether new pods are Pending — that means the GPU
+              node pool hit its max or the zone is out of L4 capacity.
+
+        - alert: VLLMDown
+          expr: up{job=~".*vllm.*"} == 0
+          for: 2m
+          labels:
+            severity: critical
+            component: vllm
+          annotations:
+            summary: "vLLM replica {{ $labels.pod }} is not responding"
+            runbook: >-
+              Check pod events and logs. A pod restarting repeatedly during
+              startup is usually OOM during weight load (raise memory limits)
+              or a missing/corrupt model image (check the initContainer).
+
+        - alert: PrefixCacheHitRateCollapsed
+          expr: |
+            (
+              rate(vllm:prefix_cache_hits_total[15m])
+              /
+              clamp_min(rate(vllm:prefix_cache_queries_total[15m]), 1)
+            ) < 0.3
+          for: 15m
+          labels:
+            severity: warning
+            component: vllm
+          annotations:
+            summary: "Prefix cache hit rate below 30%"
+            description: >-
+              The shared system prompt should be cached across nearly every
+              request. A collapse here means prefill work is being repeated and
+              directly costs TTFT and throughput.
+            runbook: >-
+              The usual cause is a configuration save, which changes the
+              compiled prompt and invalidates the shared prefix — expect a dip
+              that recovers within minutes. If it stays low, check that nothing
+              per-request has leaked into the system prompt (a timestamp, a
+              customer name, a session id). See the ordering contract in
+              backend/app/services/assembler.py.
+
+    # =====================================================================
+    # Product health — is the assistant actually useful?
+    # =====================================================================
+    - name: support-product
+      interval: 60s
+      rules:
+        - alert: EscalationRateHigh
+          expr: |
+            (
+              sum(rate(support_escalations_total[30m]))
+              /
+              clamp_min(sum(rate(support_chat_requests_total[30m])), 0.001)
+            ) > 0.4
+          for: 30m
+          labels:
+            severity: warning
+            component: product
+          annotations:
+            summary: "Over 40% of conversations escalate to a human"
+            description: >-
+              The assistant is deflecting little of the load it exists to
+              handle. This is a product failure, not an infrastructure one.
+            runbook: >-
+              Break down support_escalations_total by reason.
+              low_retrieval_confidence dominating means the knowledge base does
+              not cover what customers ask — look at the questions and add
+              documents. no_documents means nothing is indexed at all.
+              model_sentinel dominating suggests the relevance floor is set too
+              high, or retrieval is returning the wrong passages.
+
+        - alert: RetrievalReturningNothing
+          expr: |
+            (
+              sum(rate(support_escalations_total{reason="low_retrieval_confidence"}[15m]))
+              /
+              clamp_min(sum(rate(support_chat_requests_total[15m])), 0.001)
+            ) > 0.5
+          for: 15m
+          labels:
+            severity: critical
+            component: retrieval
+          annotations:
+            summary: "Retrieval is failing to match most questions"
+            runbook: >-
+              Check the embeddings service is healthy and that documents are in
+              'ready' state. A sudden change here after a deploy usually means
+              the embedding model changed without a re-index — query and
+              document vectors must come from the same model, or every
+              similarity score is meaningless.
+
+        - alert: UncitedSpecificClaims
+          expr: |
+            (
+              sum(rate(support_chat_requests_total{outcome="answered"}[1h]))
+              -
+              sum(rate(support_answers_with_citations_total[1h]))
+            )
+            /
+            clamp_min(sum(rate(support_chat_requests_total{outcome="answered"}[1h])), 0.001)
+            > 0.3
+          for: 1h
+          labels:
+            severity: warning
+            component: product
+          annotations:
+            summary: "Over 30% of answers cite no source"
+            description: >-
+              Answers without citations cannot be verified by the customer or
+              audited afterwards, and are where invented policy details appear.
+            runbook: >-
+              Check the compiled prompt still contains the citation
+              instruction (Configuration → prompt preview). Also check whether
+              retrieval is returning chunks at all — an answer with no context
+              cannot cite anything.
+
+        - alert: BackendHighLatency
+          expr: |
+            histogram_quantile(0.95,
+              sum by (le) (rate(support_chat_duration_seconds_bucket[5m]))
+            ) > 15
+          for: 10m
+          labels:
+            severity: warning
+            component: backend
+          annotations:
+            summary: "p95 end-to-end chat latency above 15s"
+            runbook: >-
+              Compare against vLLM's own e2e latency. If the gateway is much
+              slower than the engine, the gap is retrieval — check
+              support_retrieval_duration_seconds and whether the HNSW index is
+              still being used (Cloud SQL query insights will show a sequential
+              scan).
+
+        - alert: BackendUpstreamErrors
+          expr: rate(support_chat_requests_total{outcome="upstream_error"}[5m]) > 0.05
+          for: 5m
+          labels:
+            severity: critical
+            component: backend
+          annotations:
+            summary: "Chat requests failing against the serving layer"
+            runbook: >-
+              Check vLLM pod health and the NetworkPolicy — if backend pod
+              labels changed, the policy silently stops allowing the connection
+              and every request fails with a transport error.
+
+    # =====================================================================
+    # Capacity
+    # =====================================================================
+    - name: support-capacity
+      interval: 60s
+      rules:
+        - alert: GPUNodesUnschedulable
+          expr: |
+            kube_pod_status_phase{phase="Pending", namespace="support"}
+            * on(pod, namespace) group_left
+              kube_pod_labels{label_app_kubernetes_io_component="inference"}
+            > 0
+          for: 10m
+          labels:
+            severity: critical
+            component: capacity
+          annotations:
+            summary: "vLLM pods cannot be scheduled"
+            description: >-
+              A vLLM pod has been Pending for 10 minutes. Autoscaling cannot
+              add capacity while this is true.
+            runbook: >-
+              kubectl describe the pending pod. "Insufficient nvidia.com/gpu"
+              with the node pool at max means raise gpu_max_nodes. A zone-level
+              capacity error means L4 is exhausted in that zone — add another
+              zone to gpu_zones in the Terraform variables.
+
+        - alert: DocumentIngestionFailing
+          expr: rate(support_documents_ingested_total{status="failed"}[15m]) > 0
+          for: 15m
+          labels:
+            severity: warning
+            component: ingestion
+          annotations:
+            summary: "Document ingestion is failing"
+            runbook: >-
+              The failure reason is stored on the document row and shown in the
+              knowledge base UI. Most common cause is a scanned PDF with no
+              extractable text, which needs OCR before upload.

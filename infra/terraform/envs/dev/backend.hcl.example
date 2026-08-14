@@ -1,0 +1,8 @@
+# Copy to backend.hcl, then:
+#   terraform init -backend-config=backend.hcl
+#
+# The state bucket must exist before the first init and should have versioning
+# and object-retention enabled — Terraform state is the only record of what was
+# provisioned, and losing it means reconciling by hand.
+
+bucket = "your-tf-state-bucket"

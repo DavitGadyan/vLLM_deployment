@@ -1,0 +1,429 @@
+{
+  "uid": "support-vllm-serving",
+  "title": "Support Assistant — vLLM Serving",
+  "description": "Latency, throughput and GPU memory for the vLLM serving tier. Read alongside the Product KPIs dashboard: this one says whether the GPU is healthy, that one says whether the assistant is useful.",
+  "tags": ["support-assistant", "vllm", "inference"],
+  "timezone": "browser",
+  "schemaVersion": 39,
+  "version": 1,
+  "refresh": "30s",
+  "time": { "from": "now-3h", "to": "now" },
+  "templating": {
+    "list": [
+      {
+        "name": "datasource",
+        "type": "datasource",
+        "query": "prometheus",
+        "current": {},
+        "hide": 0
+      },
+      {
+        "name": "namespace",
+        "type": "query",
+        "datasource": { "type": "prometheus", "uid": "${datasource}" },
+        "query": "label_values(vllm:num_requests_running, namespace)",
+        "current": { "text": "support", "value": "support" },
+        "refresh": 1
+      },
+      {
+        "name": "pod",
+        "type": "query",
+        "datasource": { "type": "prometheus", "uid": "${datasource}" },
+        "query": "label_values(vllm:num_requests_running{namespace=\"$namespace\"}, pod)",
+        "includeAll": true,
+        "multi": true,
+        "current": { "text": "All", "value": "$__all" },
+        "refresh": 2
+      }
+    ]
+  },
+  "panels": [
+    {
+      "type": "row",
+      "title": "Latency — what the user feels",
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 0 },
+      "collapsed": false
+    },
+    {
+      "id": 1,
+      "type": "stat",
+      "title": "TTFT p95",
+      "description": "Time to first token. This is the pause before the assistant starts typing, and the number users describe as 'slow'. Budget: under 1.5s.",
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "gridPos": { "h": 5, "w": 4, "x": 0, "y": 1 },
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.95, sum by (le) (rate(vllm:time_to_first_token_seconds_bucket{namespace=\"$namespace\"}[5m])))",
+          "legendFormat": "p95"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "decimals": 2,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "yellow", "value": 1.5 },
+              { "color": "red", "value": 3 }
+            ]
+          }
+        }
+      },
+      "options": { "colorMode": "value", "graphMode": "area", "textMode": "auto" }
+    },
+    {
+      "id": 2,
+      "type": "stat",
+      "title": "Inter-token latency p95",
+      "description": "Gap between streamed tokens. Above ~80ms the text visibly stutters as it appears.",
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "gridPos": { "h": 5, "w": 4, "x": 4, "y": 1 },
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.95, sum by (le) (rate(vllm:time_per_output_token_seconds_bucket{namespace=\"$namespace\"}[5m])))",
+          "legendFormat": "p95"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "decimals": 3,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "yellow", "value": 0.08 },
+              { "color": "red", "value": 0.15 }
+            ]
+          }
+        }
+      },
+      "options": { "colorMode": "value", "graphMode": "area" }
+    },
+    {
+      "id": 3,
+      "type": "stat",
+      "title": "Output tokens/sec",
+      "description": "Aggregate generation throughput across all replicas.",
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "gridPos": { "h": 5, "w": 4, "x": 8, "y": 1 },
+      "targets": [
+        {
+          "expr": "sum(rate(vllm:generation_tokens_total{namespace=\"$namespace\"}[5m]))",
+          "legendFormat": "tokens/s"
+        }
+      ],
+      "fieldConfig": { "defaults": { "unit": "short", "decimals": 0 } },
+      "options": { "colorMode": "none", "graphMode": "area" }
+    },
+    {
+      "id": 4,
+      "type": "stat",
+      "title": "Prefix cache hit rate",
+      "description": "Share of prompt tokens served from cache. The compiled system prompt is shared by every request, so this should sit high. A collapse means prefill work is being repeated — check whether something per-request leaked into the system prompt.",
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "gridPos": { "h": 5, "w": 4, "x": 12, "y": 1 },
+      "targets": [
+        {
+          "expr": "sum(rate(vllm:prefix_cache_hits_total{namespace=\"$namespace\"}[10m])) / clamp_min(sum(rate(vllm:prefix_cache_queries_total{namespace=\"$namespace\"}[10m])), 1)",
+          "legendFormat": "hit rate"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit",
+          "decimals": 1,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "red", "value": null },
+              { "color": "yellow", "value": 0.3 },
+              { "color": "green", "value": 0.6 }
+            ]
+          }
+        }
+      },
+      "options": { "colorMode": "value", "graphMode": "area" }
+    },
+    {
+      "id": 5,
+      "type": "stat",
+      "title": "KV cache utilisation",
+      "description": "Fraction of GPU KV cache in use. Above 90% vLLM begins preempting sequences, which users see as responses stalling mid-sentence.",
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "gridPos": { "h": 5, "w": 4, "x": 16, "y": 1 },
+      "targets": [
+        {
+          "expr": "max(vllm:gpu_cache_usage_perc{namespace=\"$namespace\"})",
+          "legendFormat": "max"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit",
+          "decimals": 1,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "yellow", "value": 0.8 },
+              { "color": "red", "value": 0.9 }
+            ]
+          }
+        }
+      },
+      "options": { "colorMode": "value", "graphMode": "area" }
+    },
+    {
+      "id": 6,
+      "type": "stat",
+      "title": "Replicas",
+      "description": "Serving replicas currently up.",
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "gridPos": { "h": 5, "w": 4, "x": 20, "y": 1 },
+      "targets": [
+        {
+          "expr": "count(up{namespace=\"$namespace\", job=~\".*vllm.*\"} == 1)",
+          "legendFormat": "up"
+        }
+      ],
+      "fieldConfig": { "defaults": { "unit": "short", "decimals": 0 } },
+      "options": { "colorMode": "none", "graphMode": "area" }
+    },
+    {
+      "id": 10,
+      "type": "timeseries",
+      "title": "Time to first token",
+      "description": "Percentiles over time. A widening gap between p50 and p99 means queueing, not slow generation.",
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 6 },
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.50, sum by (le) (rate(vllm:time_to_first_token_seconds_bucket{namespace=\"$namespace\"}[5m])))",
+          "legendFormat": "p50"
+        },
+        {
+          "expr": "histogram_quantile(0.95, sum by (le) (rate(vllm:time_to_first_token_seconds_bucket{namespace=\"$namespace\"}[5m])))",
+          "legendFormat": "p95"
+        },
+        {
+          "expr": "histogram_quantile(0.99, sum by (le) (rate(vllm:time_to_first_token_seconds_bucket{namespace=\"$namespace\"}[5m])))",
+          "legendFormat": "p99"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "custom": { "lineWidth": 1, "fillOpacity": 5, "showPoints": "never" }
+        }
+      },
+      "options": { "legend": { "displayMode": "list", "placement": "bottom" } }
+    },
+    {
+      "id": 11,
+      "type": "timeseries",
+      "title": "End-to-end request latency",
+      "description": "Full request duration as the engine measures it.",
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 6 },
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.50, sum by (le) (rate(vllm:e2e_request_latency_seconds_bucket{namespace=\"$namespace\"}[5m])))",
+          "legendFormat": "p50"
+        },
+        {
+          "expr": "histogram_quantile(0.95, sum by (le) (rate(vllm:e2e_request_latency_seconds_bucket{namespace=\"$namespace\"}[5m])))",
+          "legendFormat": "p95"
+        },
+        {
+          "expr": "histogram_quantile(0.99, sum by (le) (rate(vllm:e2e_request_latency_seconds_bucket{namespace=\"$namespace\"}[5m])))",
+          "legendFormat": "p99"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "custom": { "lineWidth": 1, "fillOpacity": 5, "showPoints": "never" }
+        }
+      }
+    },
+    {
+      "type": "row",
+      "title": "Batching and queueing — the autoscaling signal",
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 14 },
+      "collapsed": false
+    },
+    {
+      "id": 20,
+      "type": "timeseries",
+      "title": "Running vs waiting requests",
+      "description": "Continuous batching in action. 'Running' is what the GPU is decoding right now; 'waiting' is the backlog. Waiting is the metric the HPA scales on — not CPU, which stays low on a saturated GPU pod and would never trigger.",
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 15 },
+      "targets": [
+        {
+          "expr": "sum(vllm:num_requests_running{namespace=\"$namespace\"})",
+          "legendFormat": "running (decoding)"
+        },
+        {
+          "expr": "sum(vllm:num_requests_waiting{namespace=\"$namespace\"})",
+          "legendFormat": "waiting (queued)"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": { "lineWidth": 1, "fillOpacity": 15, "showPoints": "never" }
+        },
+        "overrides": [
+          {
+            "matcher": { "id": "byName", "options": "waiting (queued)" },
+            "properties": [
+              { "id": "color", "value": { "mode": "fixed", "fixedColor": "orange" } }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "id": 21,
+      "type": "timeseries",
+      "title": "GPU KV cache utilisation per replica",
+      "description": "Per-pod so an imbalanced replica is visible. Sustained >90% precedes preemption.",
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 15 },
+      "targets": [
+        {
+          "expr": "vllm:gpu_cache_usage_perc{namespace=\"$namespace\", pod=~\"$pod\"}",
+          "legendFormat": "{{pod}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit",
+          "max": 1,
+          "custom": { "lineWidth": 1, "fillOpacity": 10, "showPoints": "never" }
+        }
+      }
+    },
+    {
+      "id": 22,
+      "type": "timeseries",
+      "title": "Preemptions",
+      "description": "Sequences evicted from the KV cache and later recomputed. Any sustained rate means max-num-seqs is set above what the cache can actually hold — the GPU is redoing work it already did.",
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "gridPos": { "h": 7, "w": 8, "x": 0, "y": 23 },
+      "targets": [
+        {
+          "expr": "sum by (pod) (rate(vllm:num_preemptions_total{namespace=\"$namespace\"}[5m]))",
+          "legendFormat": "{{pod}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": { "lineWidth": 1, "fillOpacity": 20, "showPoints": "never" }
+        }
+      }
+    },
+    {
+      "id": 23,
+      "type": "timeseries",
+      "title": "Token throughput",
+      "description": "Prompt tokens are prefill work, generation tokens are decode work. Prefill dominating suggests the prefix cache is not helping as much as it should.",
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "gridPos": { "h": 7, "w": 8, "x": 8, "y": 23 },
+      "targets": [
+        {
+          "expr": "sum(rate(vllm:prompt_tokens_total{namespace=\"$namespace\"}[5m]))",
+          "legendFormat": "prompt (prefill)"
+        },
+        {
+          "expr": "sum(rate(vllm:generation_tokens_total{namespace=\"$namespace\"}[5m]))",
+          "legendFormat": "generation (decode)"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": { "lineWidth": 1, "fillOpacity": 10, "showPoints": "never" }
+        }
+      }
+    },
+    {
+      "id": 24,
+      "type": "timeseries",
+      "title": "Prefix cache hit rate",
+      "description": "Expect a dip immediately after a configuration save — the compiled prompt changed, so the shared prefix must refill. It should recover within minutes.",
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "gridPos": { "h": 7, "w": 8, "x": 16, "y": 23 },
+      "targets": [
+        {
+          "expr": "sum(rate(vllm:prefix_cache_hits_total{namespace=\"$namespace\"}[5m])) / clamp_min(sum(rate(vllm:prefix_cache_queries_total{namespace=\"$namespace\"}[5m])), 1)",
+          "legendFormat": "hit rate"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit",
+          "max": 1,
+          "min": 0,
+          "custom": { "lineWidth": 1, "fillOpacity": 15, "showPoints": "never" }
+        }
+      }
+    },
+    {
+      "type": "row",
+      "title": "Capacity",
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 30 },
+      "collapsed": false
+    },
+    {
+      "id": 30,
+      "type": "timeseries",
+      "title": "Replica count vs queue depth",
+      "description": "Whether autoscaling is tracking demand. Queue depth rising while replicas stay flat means the HPA is not reading the metric — check prometheus-adapter.",
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 31 },
+      "targets": [
+        {
+          "expr": "count(up{namespace=\"$namespace\", job=~\".*vllm.*\"} == 1)",
+          "legendFormat": "replicas"
+        },
+        {
+          "expr": "sum(vllm:num_requests_waiting{namespace=\"$namespace\"})",
+          "legendFormat": "queued requests"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": { "lineWidth": 2, "fillOpacity": 0, "showPoints": "never" }
+        }
+      }
+    },
+    {
+      "id": 31,
+      "type": "timeseries",
+      "title": "GPU utilisation",
+      "description": "From DCGM. Low utilisation with a deep queue points at a CPU-side bottleneck (tokenization, scheduling) rather than a GPU one.",
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 31 },
+      "targets": [
+        {
+          "expr": "avg by (pod) (DCGM_FI_DEV_GPU_UTIL{namespace=\"$namespace\"})",
+          "legendFormat": "{{pod}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percent",
+          "max": 100,
+          "custom": { "lineWidth": 1, "fillOpacity": 10, "showPoints": "never" }
+        }
+      }
+    }
+  ]
+}

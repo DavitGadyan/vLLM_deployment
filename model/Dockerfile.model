@@ -1,0 +1,32 @@
+# Packages the compressed weights as a standalone, versioned image.
+#
+# Why an image rather than a GCS download at pod start:
+#   * Scale-up latency. HPA adds a vLLM replica in response to queue depth; a
+#     pod that must pull 5.5 GB from GCS before the engine even starts loading
+#     is a pod that arrives after the traffic spike is over. Baked-in weights
+#     land with the image pull, which GKE image streaming overlaps with node
+#     startup.
+#   * Immutability. The image digest pins the exact weights that were evaluated.
+#
+# It stays a *separate* image from the app code so model and application roll
+# independently — a prompt fix should not force a 5.5 GB re-push.
+#
+# Build (from repo root, after `make quantize && make evaluate`):
+#   docker build -f model/Dockerfile.model \
+#     --build-arg ARTIFACT_DIR=model/output/qwen2.5-7b-instruct-w4a16 \
+#     -t $REGISTRY/support-model:$(git rev-parse --short HEAD) .
+
+FROM busybox:1.36-uclibc
+
+ARG ARTIFACT_DIR=model/output/qwen2.5-7b-instruct-w4a16
+ARG MODEL_VERSION=dev
+
+LABEL org.opencontainers.image.title="qwen-support-w4a16" \
+      org.opencontainers.image.description="Qwen2.5-7B-Instruct compressed to INT4 W4A16 (compressed-tensors)" \
+      com.support.model-version="${MODEL_VERSION}"
+
+COPY ${ARTIFACT_DIR}/ /models/qwen2.5-7b-instruct-w4a16/
+
+# The serving pod runs this image as an initContainer and copies /models into a
+# shared emptyDir; see deploy/helm/vllm/templates/deployment.yaml.
+CMD ["/bin/sh", "-c", "cp -a /models/. /shared-models/ && echo 'model staged'"]

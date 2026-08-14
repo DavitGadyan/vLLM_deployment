@@ -1,0 +1,86 @@
+# prometheus-adapter values — exposes vLLM queue depth to the HPA.
+#
+# This file is the load-bearing piece of the autoscaling design. Kubernetes'
+# HPA can only scale on metrics available through the custom metrics API;
+# vLLM's metrics live in Prometheus. The adapter bridges the two.
+#
+# Install:
+#   helm repo add prometheus-community https://prometheus-community.github.io/helm-charts
+#   helm upgrade --install prometheus-adapter prometheus-community/prometheus-adapter \
+#     -n monitoring -f observability/prometheus/adapter-values.yaml
+#
+# Verify the metric is actually reachable before trusting the HPA:
+#   kubectl get --raw \
+#     "/apis/custom.metrics.k8s.io/v1beta1/namespaces/support/pods/*/vllm_num_requests_waiting"
+
+prometheus:
+  url: http://kube-prometheus-stack-prometheus.monitoring.svc
+  port: 9090
+
+rules:
+  # Replace the defaults: they expose hundreds of container metrics we do not
+  # scale on, and each one costs the adapter a periodic Prometheus query.
+  default: false
+
+  custom:
+    # --- Queue depth: the metric the vLLM HPA scales on -------------------
+    #
+    # `vllm:num_requests_waiting` counts requests admitted to the engine but
+    # not yet decoding. It rises the instant a replica runs out of KV cache or
+    # batch slots, which is precisely the moment another replica is needed.
+    #
+    # This is not the same thing as CPU. A saturated vLLM pod is blocked on
+    # CUDA, not compute — it sits at unremarkable CPU while its queue grows.
+    # A CPU-target HPA in front of this workload simply never fires.
+    - seriesQuery: 'vllm:num_requests_waiting{namespace!="",pod!=""}'
+      resources:
+        overrides:
+          namespace: { resource: namespace }
+          pod: { resource: pod }
+      name:
+        matches: "^vllm:num_requests_waiting$"
+        as: "vllm_num_requests_waiting"
+      # Averaged over 1m: raw queue depth is spiky enough that scaling on the
+      # instantaneous value would thrash replicas that take minutes to start.
+      metricsQuery: 'avg_over_time(vllm:num_requests_waiting{<<.LabelMatchers>>}[1m])'
+
+    # --- Running requests: useful for dashboards and manual investigation --
+    - seriesQuery: 'vllm:num_requests_running{namespace!="",pod!=""}'
+      resources:
+        overrides:
+          namespace: { resource: namespace }
+          pod: { resource: pod }
+      name:
+        matches: "^vllm:num_requests_running$"
+        as: "vllm_num_requests_running"
+      metricsQuery: 'avg_over_time(vllm:num_requests_running{<<.LabelMatchers>>}[1m])'
+
+    # --- KV cache utilisation ---------------------------------------------
+    #
+    # Available as an alternative scaling signal. Queue depth is the better
+    # primary because it reflects experienced latency directly, while KV usage
+    # can sit high and stable on a healthy pod serving long conversations.
+    - seriesQuery: 'vllm:gpu_cache_usage_perc{namespace!="",pod!=""}'
+      resources:
+        overrides:
+          namespace: { resource: namespace }
+          pod: { resource: pod }
+      name:
+        matches: "^vllm:gpu_cache_usage_perc$"
+        as: "vllm_gpu_cache_usage_perc"
+      metricsQuery: 'avg_over_time(vllm:gpu_cache_usage_perc{<<.LabelMatchers>>}[1m])'
+
+resources:
+  requests:
+    cpu: 100m
+    memory: 256Mi
+  limits:
+    memory: 512Mi
+
+replicas: 2
+
+# The metrics API being down means the HPA stops scaling, so it needs the same
+# availability treatment as anything else on the serving path.
+podDisruptionBudget:
+  enabled: true
+  minAvailable: 1

@@ -1,0 +1,30 @@
+# Quality gate for the compressed artifact.
+#
+# `max_absolute_drop` is in the metric's own units (accuracy points as a
+# fraction, so 0.02 = 2 points). A W4A16 GPTQ run on a well-calibrated 7B
+# typically lands inside 1 point on these; 2 points is the point at which the
+# regression is worth a human decision rather than an automatic ship.
+
+academic:
+  # Instruction following is the one that actually predicts support quality —
+  # it is held to a tighter bound than the reasoning benchmarks.
+  ifeval:
+    metric: inst_level_strict_acc
+    max_absolute_drop: 0.015
+  arc_challenge:
+    metric: acc_norm
+    max_absolute_drop: 0.02
+  gsm8k:
+    metric: exact_match
+    max_absolute_drop: 0.03
+
+# Behavioural gate on the held-out support set. These are absolute floors, not
+# deltas — a support assistant that ignores the supplied policy is unshippable
+# regardless of what the baseline did.
+support:
+  grounding_pass_rate:
+    min_absolute: 0.90
+  escalation_pass_rate:
+    min_absolute: 0.90
+  forbidden_content_rate:
+    max_absolute: 0.02

@@ -1,0 +1,103 @@
+{{- if .Values.migrations.enabled }}
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{ include "backend.fullname" . }}-migrate-{{ .Release.Revision }}
+  labels:
+    {{- /* Only the selector labels, then an explicit component. Including the
+           full label set would set app.kubernetes.io/component twice. */}}
+    {{- include "backend.selectorLabels" . | nindent 4 }}
+    app.kubernetes.io/component: migration
+  annotations:
+    # Runs before the new pods start, and blocks the release if it fails —
+    # rather than letting a fleet of pods start against a schema they expect
+    # and the database does not have.
+    "helm.sh/hook": pre-install,pre-upgrade
+    "helm.sh/hook-weight": "-5"
+    "helm.sh/hook-delete-policy": before-hook-creation
+spec:
+  backoffLimit: 2
+  # Do not let a stuck migration hold a deploy open indefinitely.
+  activeDeadlineSeconds: 600
+  ttlSecondsAfterFinished: 3600
+  template:
+    metadata:
+      labels:
+        {{- include "backend.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: migration
+    spec:
+      restartPolicy: Never
+      serviceAccountName: {{ include "backend.serviceAccountName" . }}
+
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        fsGroup: 10001
+
+      {{- if .Values.cloudSqlProxy.enabled }}
+      initContainers:
+        # Sidecar-style init container: the proxy must outlive the migration
+        # step, so it runs as a native sidecar (restartPolicy: Always on an
+        # initContainer) rather than a plain container the Job would wait on.
+        - name: cloud-sql-proxy
+          image: {{ .Values.cloudSqlProxy.image }}
+          restartPolicy: Always
+          args:
+            - "--structured-logs"
+            - "--port=5432"
+            - "--exit-zero-on-sigterm"
+            - {{ .Values.cloudSqlProxy.instanceConnectionName | quote }}
+          securityContext:
+            runAsNonRoot: true
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+          resources:
+            {{- toYaml .Values.cloudSqlProxy.resources | nindent 12 }}
+      {{- end }}
+
+      containers:
+        - name: migrate
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          command: ["alembic", "upgrade", "head"]
+
+          envFrom:
+            - configMapRef:
+                name: {{ include "backend.fullname" . }}
+
+          env:
+            - name: DB_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.database.passwordSecret.name }}
+                  key: {{ .Values.database.passwordSecret.key }}
+            - name: DATABASE_URL
+              value: {{ include "backend.databaseUrl" . | quote }}
+
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+
+          resources:
+            requests:
+              cpu: 100m
+              memory: 256Mi
+            limits:
+              memory: 512Mi
+
+      volumes:
+        - name: tmp
+          emptyDir: {}
+{{- end }}

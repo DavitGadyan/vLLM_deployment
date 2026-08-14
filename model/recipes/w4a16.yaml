@@ -1,0 +1,24 @@
+# INT4 weight-only quantization (W4A16) via GPTQ.
+#
+# Why W4A16 and not W8A8/FP8:
+#   * Weights drop from ~15.2 GB (bf16) to ~5.5 GB, which is what lets a 7B and
+#     a useful KV cache share a single 24 GB L4. More free VRAM means a deeper
+#     KV cache, which means more concurrent sequences, which is the whole point
+#     of continuous batching.
+#   * On Ada (L4, sm_89) compressed-tensors W4A16 dispatches to Marlin kernels,
+#     so the dequant overhead is small at the batch sizes we serve.
+#
+# group_size 128 with symmetric int4 is the standard accuracy/speed tradeoff.
+# actorder is left at the GPTQ default ("weight"), which recovers up to ~2
+# points of accuracy at no runtime cost.
+#
+# lm_head stays in full precision — quantizing it costs measurable output
+# quality for almost no memory saving.
+
+quantization_stage:
+  quantization_modifiers:
+    GPTQModifier:
+      targets: ["Linear"]
+      scheme: W4A16
+      ignore: ["lm_head"]
+      dampening_frac: 0.01

@@ -1,0 +1,53 @@
+replicaCount: 2
+
+image:
+  repository: REGISTRY/support-frontend
+  tag: latest
+  pullPolicy: IfNotPresent
+
+service:
+  type: ClusterIP
+  port: 3000
+
+config:
+  # Server-side only. No NEXT_PUBLIC_ prefix, so it never reaches the browser
+  # bundle — the client talks exclusively to /api/* route handlers.
+  backendInternalUrl: http://support-backend:8080
+  appName: Support Console
+
+ingress:
+  enabled: true
+  className: gce
+  annotations:
+    kubernetes.io/ingress.class: gce
+    # Managed certificate; create the ManagedCertificate separately.
+    # networking.gke.io/managed-certificates: support-console-cert
+  host: support.example.com
+  tls:
+    enabled: true
+    secretName: ""
+
+resources:
+  requests:
+    cpu: 100m
+    memory: 256Mi
+  limits:
+    memory: 512Mi
+
+autoscaling:
+  enabled: true
+  minReplicas: 2
+  maxReplicas: 6
+  targetCPUUtilizationPercentage: 75
+
+podDisruptionBudget:
+  enabled: true
+  minAvailable: 1
+
+# SSE responses proxy through this tier, so shutdown must not cut a stream.
+terminationGracePeriodSeconds: 60
+
+nodeSelector:
+  workload: general
+tolerations: []
+podAnnotations: {}

@@ -1,0 +1,122 @@
+# Local development stack.
+#
+# Two supported modes:
+#   make dev         — everything, including vLLM on a local NVIDIA GPU
+#   make dev-no-gpu  — everything except vLLM; set VLLM_BASE_URL in .env to a
+#                      remote GPU box so you can develop from a machine without
+#                      a GPU while still talking to the real engine.
+
+name: vllm-support
+
+services:
+  postgres:
+    image: pgvector/pgvector:pg16
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-support}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-support-dev-password}
+      POSTGRES_DB: ${POSTGRES_DB:-support}
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-support} -d ${POSTGRES_DB:-support}"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  # CPU-only embedding server, OpenAI-compatible at /v1/embeddings.
+  # Kept separate from the chat model so RAG ingestion never contends with the
+  # GPU serving user traffic.
+  embeddings:
+    image: ghcr.io/huggingface/text-embeddings-inference:cpu-1.5
+    command: ["--model-id", "${EMBEDDINGS_MODEL:-BAAI/bge-small-en-v1.5}", "--port", "8001"]
+    ports:
+      - "8001:8001"
+    volumes:
+      - hf-cache:/data
+    environment:
+      HF_TOKEN: ${HF_TOKEN:-}
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:8001/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+      start_period: 60s
+
+  vllm:
+    build:
+      context: ./serving
+      dockerfile: Dockerfile.vllm
+    ports:
+      - "8000:8000"
+    environment:
+      MODEL_PATH: ${MODEL_PATH:-/models/qwen2.5-7b-instruct-w4a16}
+      SERVED_MODEL_NAME: ${SERVED_MODEL_NAME:-qwen-support}
+      VLLM_API_KEY: ${VLLM_API_KEY:-local-dev-key}
+      MAX_MODEL_LEN: ${MAX_MODEL_LEN:-8192}
+      HF_TOKEN: ${HF_TOKEN:-}
+    volumes:
+      # Mount locally-quantized weights straight in, so you can iterate on the
+      # compression recipe without rebuilding an image.
+      - ./model/output/qwen2.5-7b-instruct-w4a16:/models/qwen2.5-7b-instruct-w4a16:ro
+      - hf-cache:/root/.cache/huggingface
+    shm_size: "8gb"
+    ipc: host
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:8000/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 40
+      start_period: 180s
+
+  backend:
+    build:
+      context: ./backend
+    ports:
+      - "8080:8080"
+    env_file:
+      - .env
+    environment:
+      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-support}:${POSTGRES_PASSWORD:-support-dev-password}@postgres:5432/${POSTGRES_DB:-support}
+      EMBEDDINGS_BASE_URL: http://embeddings:8001/v1
+    depends_on:
+      postgres:
+        condition: service_healthy
+      embeddings:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request;urllib.request.urlopen('http://localhost:8080/healthz')"]
+      interval: 10s
+      timeout: 5s
+      retries: 20
+      start_period: 20s
+
+  frontend:
+    build:
+      context: ./frontend
+      target: dev
+    ports:
+      - "3000:3000"
+    environment:
+      BACKEND_INTERNAL_URL: http://backend:8080
+      NEXT_PUBLIC_APP_NAME: ${NEXT_PUBLIC_APP_NAME:-Support Console}
+      NODE_ENV: development
+    volumes:
+      - ./frontend:/app
+      - /app/node_modules
+      - /app/.next
+    depends_on:
+      backend:
+        condition: service_healthy
+
+volumes:
+  postgres-data:
+  hf-cache:

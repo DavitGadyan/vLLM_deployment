@@ -1,0 +1,90 @@
+replicaCount: 2
+
+image:
+  repository: REGISTRY/support-backend
+  tag: latest
+  pullPolicy: IfNotPresent
+
+serviceAccount:
+  create: true
+  name: support-backend
+  # Set from `terraform output backend_service_account`.
+  annotations: {}
+  # iam.gke.io/gcp-service-account: support-prod-backend@PROJECT.iam.gserviceaccount.com
+
+service:
+  type: ClusterIP
+  port: 8080
+
+config:
+  vllmBaseUrl: http://support-vllm:8000/v1
+  embeddingsBaseUrl: http://support-embeddings:8001/v1
+  servedModelName: qwen-support
+  embeddingsModel: BAAI/bge-small-en-v1.5
+  embeddingsDim: 384
+  maxModelLen: 8192
+  maxOutputTokens: 1024
+  retrievalTopK: 5
+  retrievalMinScore: "0.35"
+  historyTurns: 6
+  logLevel: INFO
+  logFormat: json
+  corsAllowOrigins: ""
+
+database:
+  # Cloud SQL private IP, or the Cloud SQL Auth Proxy sidecar below.
+  host: 127.0.0.1
+  port: 5432
+  name: support
+  user: support
+  passwordSecret:
+    name: support-db-password
+    key: password
+
+# Cloud SQL Auth Proxy as a sidecar. Preferred over connecting straight to the
+# private IP because it authenticates with Workload Identity and encrypts in
+# transit without managing certificates.
+cloudSqlProxy:
+  enabled: true
+  image: gcr.io/cloud-sql-connectors/cloud-sql-proxy:2.14.1
+  instanceConnectionName: PROJECT:REGION:INSTANCE
+  resources:
+    requests:
+      cpu: 50m
+      memory: 64Mi
+    limits:
+      memory: 256Mi
+
+# Runs migrations before the new version starts serving.
+migrations:
+  enabled: true
+
+resources:
+  requests:
+    cpu: 250m
+    memory: 512Mi
+  limits:
+    memory: 1Gi
+
+autoscaling:
+  enabled: true
+  minReplicas: 2
+  maxReplicas: 10
+  targetCPUUtilizationPercentage: 70
+
+podDisruptionBudget:
+  enabled: true
+  minAvailable: 1
+
+serviceMonitor:
+  enabled: true
+  interval: 30s
+
+# SSE streams can run for a minute or more; a short grace period would cut
+# them off mid-answer during a rollout.
+terminationGracePeriodSeconds: 90
+
+podAnnotations: {}
+nodeSelector:
+  workload: general
+tolerations: []

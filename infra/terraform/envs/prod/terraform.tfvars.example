@@ -1,0 +1,17 @@
+# Copy to terraform.tfvars and fill in. Never commit terraform.tfvars.
+
+project_id = "your-gcp-project-id"
+region     = "us-central1"
+
+# Required in production. An empty list makes the Kubernetes API unreachable,
+# which is safer than the alternative but will block your first deploy.
+authorized_networks = [
+  # { cidr_block = "203.0.113.0/24", display_name = "office" },
+  # { cidr_block = "198.51.100.7/32", display_name = "ci" },
+]
+
+gpu_zones     = ["us-central1-a", "us-central1-c"]
+gpu_min_nodes = 2
+gpu_max_nodes = 8
+
+db_tier = "db-custom-4-15360"
