@@ -11,6 +11,27 @@ import { expect, test } from "@playwright/test";
  */
 
 test.describe("chat", () => {
+  // These need the model server and the embedding service, which need a GPU.
+  // On a machine without one they fail five times over ninety seconds each,
+  // which reads as a broken product rather than as an absent dependency —
+  // so check first and say plainly which piece is missing.
+  test.beforeEach(async ({ page }) => {
+    const response = await page.request
+      .get("/api/health/ready", { timeout: 5000 })
+      .catch(() => null);
+    const checks = response?.ok()
+      ? ((await response.json()) as { checks?: Record<string, boolean> }).checks
+      : undefined;
+
+    const missing = ["vllm", "embeddings"].filter((name) => checks?.[name] !== true);
+    test.skip(
+      !checks || missing.length > 0,
+      checks
+        ? `not reachable: ${missing.join(", ")} — these specs need a GPU host running the model`
+        : "backend not reachable — run `make dev` for the chat specs",
+    );
+  });
+
   test("streams an answer and cites a source", async ({ page }) => {
     await page.goto("/");
 

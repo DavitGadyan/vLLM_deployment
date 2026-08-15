@@ -48,14 +48,55 @@ def _luhn_ok(digits: str) -> bool:
     return total % 10 == 0
 
 
-def _redact_cards(text: str) -> str:
+def _redact_cards(text: str) -> tuple[str, int]:
     def replace(match: re.Match[str]) -> str:
         digits = re.sub(r"\D", "", match.group(0))
         if 13 <= len(digits) <= 19 and _luhn_ok(digits):
             return "[REDACTED_CARD]"
         return match.group(0)
 
-    return _CARD.sub(replace, text)
+    return _CARD.subn(replace, text)
+
+
+# Order matters. Secrets first, because an API key can contain a substring that
+# the phone pattern would otherwise claim; phones last, because they are the
+# loosest pattern and would otherwise swallow parts of other matches.
+_ORDERED: Final[list[tuple[str, re.Pattern[str], str]]] = [
+    ("secret", _SECRET, "[REDACTED_SECRET]"),
+    ("email", _EMAIL, "[REDACTED_EMAIL]"),
+    ("iban", _IBAN, "[REDACTED_IBAN]"),
+    ("ssn", _SSN, "[REDACTED_SSN]"),
+]
+
+
+def redact_counted(text: str) -> tuple[str, dict[str, int]]:
+    """Redact, and report how many values of each category were replaced.
+
+    The count is what makes redaction visible on the security dashboard. A
+    control nobody can see the operation of is indistinguishable from one that
+    silently stopped working — a broken regex would otherwise show up as a quiet
+    zero rather than as an alert.
+    """
+    if not text:
+        return text, {}
+
+    counts: dict[str, int] = {}
+    redacted = text
+
+    for category, pattern, placeholder in _ORDERED:
+        redacted, n = pattern.subn(placeholder, redacted)
+        if n:
+            counts[category] = counts.get(category, 0) + n
+
+    redacted, card_n = _redact_cards(redacted)
+    if card_n:
+        counts["card"] = card_n
+
+    redacted, phone_n = _PHONE.subn("[REDACTED_PHONE]", redacted)
+    if phone_n:
+        counts["phone"] = phone_n
+
+    return redacted, counts
 
 
 def redact(text: str) -> str:
@@ -64,15 +105,7 @@ def redact(text: str) -> str:
     Placeholders keep the surrounding sentence readable, so a support lead
     reviewing a transcript can still follow the conversation.
     """
-    if not text:
-        return text
-    redacted = _SECRET.sub("[REDACTED_SECRET]", text)
-    redacted = _EMAIL.sub("[REDACTED_EMAIL]", redacted)
-    redacted = _IBAN.sub("[REDACTED_IBAN]", redacted)
-    redacted = _SSN.sub("[REDACTED_SSN]", redacted)
-    redacted = _redact_cards(redacted)
-    redacted = _PHONE.sub("[REDACTED_PHONE]", redacted)
-    return redacted
+    return redact_counted(text)[0]
 
 
 def contains_pii(text: str) -> bool:

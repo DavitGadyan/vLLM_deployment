@@ -15,8 +15,19 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+# The release gate. Two tools because it asks two questions that can diverge:
+# lm-eval for "is it still smart", GuideLLM for "is it still fast".
 eval = [
     "lm-eval>=0.4.5",
+    "guidellm>=0.3.0",
+    "vllm==0.27.1",
+]
+# Preference fine-tuning from collected feedback. Separate from `eval` because
+# training needs a GPU host and the gate can be run from CI against a served
+# endpoint.
+train = [
+    "trl>=0.12",
+    "peft>=0.13",
     "vllm==0.27.1",
 ]
 

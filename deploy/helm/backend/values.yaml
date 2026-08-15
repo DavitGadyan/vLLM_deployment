@@ -31,6 +31,12 @@ config:
   logFormat: json
   corsAllowOrigins: ""
 
+  # Monitoring tab data source. Set this and the dashboard reads live series and
+  # labels itself "Live data"; leave it empty and it serves a deterministic
+  # seeded dataset labelled "Demo data". The badge is driven by the API response,
+  # so synthetic numbers can never be presented as measurements.
+  prometheusUrl: "http://kube-prometheus-stack-prometheus.monitoring.svc:9090"
+
 database:
   # Cloud SQL private IP, or the Cloud SQL Auth Proxy sidecar below.
   host: 127.0.0.1

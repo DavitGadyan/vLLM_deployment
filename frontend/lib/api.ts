@@ -1,7 +1,9 @@
 import type {
+  CompareResult,
   ConfigVersion,
   ConfigVersionSummary,
   DocumentChunk,
+  FeedbackPayload,
   KnowledgeDocument,
   PromptPreview,
 } from "@/lib/types";
@@ -90,4 +92,16 @@ export const api = {
     request<void>(`/api/documents/${id}`, { method: "DELETE" }),
 
   getChunk: (id: string) => request<DocumentChunk>(`/api/documents/chunks/${id}`),
+
+  submitFeedback: (payload: FeedbackPayload) =>
+    request<{ id: string; kind: string; created_at: string }>("/api/feedback", {
+      method: "POST",
+      body: JSON.stringify(payload),
+    }),
+
+  compareAnswers: (message: string, conversationId?: string | null) =>
+    request<CompareResult>("/api/feedback/compare", {
+      method: "POST",
+      body: JSON.stringify({ message, conversation_id: conversationId ?? null }),
+    }),
 };

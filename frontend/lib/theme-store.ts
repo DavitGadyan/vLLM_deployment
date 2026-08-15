@@ -65,6 +65,66 @@ export function getServerSnapshot(): Theme {
   return "system";
 }
 
+/**
+ * The *resolved* theme — what is actually on screen right now, with "system"
+ * collapsed to light or dark.
+ *
+ * Separate from the preference store because consumers want different things.
+ * The toggle needs to know that "system" is selected; a WebGL canvas painting
+ * its own background needs to know whether to paint dark. Anything that reads
+ * this via `useSyncExternalStore` gets the right value on first render, which
+ * avoids one frame of a light-themed scene inside a dark page.
+ */
+let resolvedSnapshot: "light" | "dark" = "light";
+let resolvedHydrated = false;
+
+function readResolved(): "light" | "dark" {
+  const explicit = document.documentElement.getAttribute("data-theme");
+  if (explicit === "dark" || explicit === "light") return explicit;
+  return window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
+}
+
+export function subscribeResolved(listener: () => void): () => void {
+  const update = () => {
+    const next = readResolved();
+    if (next !== resolvedSnapshot) {
+      resolvedSnapshot = next;
+      listener();
+    }
+  };
+
+  // Three things can change the resolved theme: the toggle stamping data-theme,
+  // the OS switching while "system" is selected, and another tab's choice
+  // arriving through storage.
+  const observer = new MutationObserver(update);
+  observer.observe(document.documentElement, {
+    attributes: true,
+    attributeFilter: ["data-theme"],
+  });
+
+  const media = window.matchMedia("(prefers-color-scheme: dark)");
+  media.addEventListener("change", update);
+  window.addEventListener("storage", update);
+
+  return () => {
+    observer.disconnect();
+    media.removeEventListener("change", update);
+    window.removeEventListener("storage", update);
+  };
+}
+
+export function getResolvedSnapshot(): "light" | "dark" {
+  if (!resolvedHydrated) {
+    resolvedSnapshot = readResolved();
+    resolvedHydrated = true;
+  }
+  return resolvedSnapshot;
+}
+
+export function getResolvedServerSnapshot(): "light" | "dark" {
+  return "light";
+}
+
 export function setTheme(next: Theme): void {
   snapshot = next;
   try {

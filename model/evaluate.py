@@ -1,10 +1,19 @@
-"""Quality gate for a compressed artifact.
+"""Release gate for a model artifact.
 
-Two halves, because they answer different questions:
+Runs on anything that changes the weights — a quantization run, a pruning run,
+or a DPO fine-tune from collected preferences. Same gate, because the question
+is the same in every case: is this artifact worse than the one it would replace?
 
-*Academic benchmarks* (lm-eval: ifeval, arc_challenge, gsm8k) answer "did
-quantization damage the model's general capability?" They are compared as a
-delta against the FP16 baseline.
+Three halves, because they answer different questions and a gate that asks only
+one of them ships the other regression:
+
+*Quality* (lm-eval: ifeval, arc_challenge, gsm8k) answers "did this damage the
+model's general capability?" Compared as a delta against the baseline.
+
+*Performance* (GuideLLM, against a running vLLM server) answers "how fast and
+efficiently does it serve?" It is measured through the real serving path —
+scheduler, continuous batching, HTTP — because that is the latency a customer
+experiences, and an in-process benchmark measures a configuration nobody runs.
 
 *The support behaviour suite* answers "will this thing behave correctly as a
 support agent?" — does it answer from the supplied policy, does it escalate
@@ -12,10 +21,21 @@ instead of inventing facts, does it treat injected instructions inside retrieved
 documents as data. Those are absolute floors, not deltas: a model that ignores
 the supplied policy is unshippable no matter what the baseline scored.
 
+Quality and performance genuinely diverge. A fine-tune that improves answers can
+add per-token latency; a change that speeds up generation can cost accuracy.
+Both are gated, and either one failing blocks the release.
+
 Exits non-zero when any threshold is breached, so CI can gate on it.
 
-    python evaluate.py --candidate output/qwen2.5-7b-instruct-w4a16 \
+    # After quantization
+    python evaluate.py --candidate output/qwen2.5-7b-instruct-w4a16 \\
                        --baseline-file baseline/fp16.json
+
+    # After a DPO fine-tune, with the candidate served on :8000 and the
+    # incumbent's numbers as the baseline
+    python evaluate.py --candidate output/qwen-support-dpo-v3 \\
+                       --baseline-file baseline/production.json \\
+                       --benchmark-target http://localhost:8000
 """
 
 from __future__ import annotations
@@ -56,7 +76,10 @@ def run_lm_eval(model_path: str, tasks: list[str], limit: int | None) -> dict[st
     """Run lm-eval through the vLLM backend (same engine that serves prod)."""
     import lm_eval
 
-    model_args = f"pretrained={model_path},dtype=auto,gpu_memory_utilization=0.85,max_model_len=4096"
+    model_args = (
+        f"pretrained={model_path},dtype=auto,"
+        "gpu_memory_utilization=0.85,max_model_len=4096"
+    )
     results = lm_eval.simple_evaluate(
         model="vllm",
         model_args=model_args,
@@ -65,6 +88,83 @@ def run_lm_eval(model_path: str, tasks: list[str], limit: int | None) -> dict[st
         batch_size="auto",
     )
     return results["results"]
+
+
+# ---------------------------------------------------------------------------
+# Serving performance
+# ---------------------------------------------------------------------------
+
+
+def run_guidellm(
+    target: str,
+    model: str,
+    *,
+    rate: float,
+    duration: int,
+    prompt_tokens: int,
+    output_tokens: int,
+) -> dict[str, Any]:
+    """
+    Benchmark the candidate *as served*, with GuideLLM.
+
+    lm-eval answers "is the model still smart". It cannot answer "is it still
+    fast", and the two come apart in both directions — a LoRA adapter that
+    improves answers can also add per-token latency, and a change that speeds
+    generation up can quietly cost accuracy.
+
+    Driven against a running vLLM server rather than an in-process engine on
+    purpose: the number that matters is what a user experiences through the
+    real serving path, including the scheduler, continuous batching and the
+    HTTP layer. An in-process benchmark measures a configuration nobody runs.
+
+    Constant arrival rate rather than "as fast as possible": saturating the
+    server measures peak throughput, which is not the operating point. Holding a
+    realistic request rate measures the latency customers actually get.
+    """
+    from guidellm.benchmark import benchmark_generative_text
+
+    report = benchmark_generative_text(
+        target=target,
+        model=model,
+        rate_type="constant",
+        rate=rate,
+        max_seconds=duration,
+        data=(
+            f"prompt_tokens={prompt_tokens},output_tokens={output_tokens}"
+        ),
+    )
+
+    # GuideLLM's own report object varies across versions; pull the handful of
+    # numbers the gate needs and keep the raw payload in the report file.
+    benchmark = report.benchmarks[0]
+    metrics = benchmark.metrics
+
+    def percentile(name: str, p: str) -> float | None:
+        series = getattr(metrics, name, None)
+        if series is None:
+            return None
+        successful = getattr(series, "successful", None) or series
+        value = getattr(getattr(successful, "percentiles", None), p, None)
+        return float(value) if value is not None else None
+
+    return {
+        # Milliseconds, to match how these are stated everywhere else here.
+        "ttft_p95_ms": percentile("time_to_first_token_ms", "p95"),
+        "ttft_p50_ms": percentile("time_to_first_token_ms", "p50"),
+        "itl_p95_ms": percentile("inter_token_latency_ms", "p95"),
+        "output_tokens_per_second": float(
+            getattr(getattr(metrics, "output_tokens_per_second", None), "successful", 0) or 0
+        ),
+        "requests_per_second": float(
+            getattr(getattr(metrics, "requests_per_second", None), "successful", 0) or 0
+        ),
+        "profile": {
+            "rate": rate,
+            "duration_s": duration,
+            "prompt_tokens": prompt_tokens,
+            "output_tokens": output_tokens,
+        },
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -198,6 +298,53 @@ def check_gate(
         if not ok:
             failures.append(f"{name} = {value:.3f}, required {bound}")
 
+    performance = candidate.get("performance")
+    if performance:
+        lines.append("\nServing performance (GuideLLM, delta vs baseline)")
+        lines.append("-" * 72)
+        base_perf = (baseline or {}).get("performance", {})
+        for name, spec in thresholds.get("performance", {}).items():
+            value = performance.get(name)
+            if value is None:
+                lines.append(f"  {name:<26} SKIPPED (not measured)")
+                continue
+
+            # Absolute ceilings first: some numbers are unshippable regardless of
+            # what the previous model did. A model that was already slow does not
+            # license the next one to be slower.
+            if "max_absolute" in spec:
+                ok = value <= spec["max_absolute"]
+                lines.append(
+                    f"  {name:<26} {value:>9.1f}  (max {spec['max_absolute']})  "
+                    f"{'PASS' if ok else 'FAIL'}"
+                )
+                if not ok:
+                    failures.append(f"{name} = {value:.1f}, ceiling {spec['max_absolute']}")
+                continue
+
+            base = base_perf.get(name)
+            if base is None:
+                lines.append(f"  {name:<26} {value:>9.1f}  (no baseline — not gated)")
+                continue
+
+            # Ratio rather than absolute delta: "20% slower" means the same thing
+            # on any hardware, where "+40ms" does not.
+            if "max_relative_increase" in spec:
+                change = (value - base) / base if base else 0.0
+                ok = change <= spec["max_relative_increase"]
+                limit = spec["max_relative_increase"]
+            else:
+                change = (base - value) / base if base else 0.0
+                ok = change <= spec["max_relative_drop"]
+                limit = spec["max_relative_drop"]
+
+            lines.append(
+                f"  {name:<26} {value:>9.1f} vs {base:>9.1f}  "
+                f"{change:+.1%} (limit {limit:.0%})  {'PASS' if ok else 'FAIL'}"
+            )
+            if not ok:
+                failures.append(f"{name} moved {change:+.1%} against a {limit:.0%} limit")
+
     failed_cases = [c for c in support.get("cases", []) if not c["passed"]]
     if failed_cases:
         lines.append("\nFailing cases")
@@ -246,6 +393,29 @@ def main() -> int:
         action="store_true",
         help="Run only the support suite (fast iteration on prompt/behaviour changes)",
     )
+    parser.add_argument(
+        "--benchmark-target",
+        default=None,
+        help=(
+            "Base URL of a running vLLM server serving the candidate, e.g. "
+            "http://localhost:8000. When set, GuideLLM measures serving "
+            "performance and the performance thresholds are gated too."
+        ),
+    )
+    parser.add_argument(
+        "--benchmark-model",
+        default=None,
+        help="Served model name at --benchmark-target (defaults to --candidate)",
+    )
+    parser.add_argument(
+        "--benchmark-rate",
+        type=float,
+        default=4.0,
+        help="Requests per second to hold during the benchmark (default: 4)",
+    )
+    parser.add_argument(
+        "--benchmark-seconds", type=int, default=120, help="Benchmark duration (default: 120)"
+    )
     args = parser.parse_args()
 
     thresholds = yaml.safe_load(args.thresholds.read_text(encoding="utf-8"))
@@ -263,6 +433,20 @@ def main() -> int:
         candidate["academic"] = run_lm_eval(args.candidate, tasks, args.limit)
     print(f"running support behaviour suite ({len(cases)} cases)")
     candidate["support"] = run_support_suite(args.candidate, cases)
+
+    if args.benchmark_target:
+        print(f"benchmarking serving performance at {args.benchmark_target}")
+        candidate["performance"] = run_guidellm(
+            args.benchmark_target,
+            args.benchmark_model or args.candidate,
+            rate=args.benchmark_rate,
+            duration=args.benchmark_seconds,
+            # A support turn: a compiled system prompt plus retrieved context in,
+            # a short answer out. Benchmarking with a 128-token prompt would
+            # measure a workload this system never serves.
+            prompt_tokens=3200,
+            output_tokens=256,
+        )
 
     baseline: dict[str, Any] | None = None
     if args.baseline_id and not args.skip_academic:
@@ -289,12 +473,26 @@ def main() -> int:
     print(f"\nreport written to {args.report}")
 
     if not passed:
-        print(f"\nQUALITY GATE FAILED ({len(failures)} threshold breaches)", file=sys.stderr)
+        print(f"\nRELEASE GATE FAILED ({len(failures)} threshold breaches)", file=sys.stderr)
         for failure in failures:
             print(f"  - {failure}", file=sys.stderr)
+        print(
+            "\nThis artifact must not be promoted. Either fix the regression or "
+            "keep serving the incumbent — a model that degraded on any of these "
+            "axes is worse than the one already in production.",
+            file=sys.stderr,
+        )
         return 1
 
-    print("\nQUALITY GATE PASSED — artifact is cleared to publish.")
+    if not args.benchmark_target:
+        print(
+            "\nnote: serving performance was not measured. Pass --benchmark-target "
+            "against a running vLLM server to gate latency and throughput too; "
+            "quality alone will not catch a model that got slower.",
+            file=sys.stderr,
+        )
+
+    print("\nRELEASE GATE PASSED — artifact is cleared to publish.")
     return 0
 
 

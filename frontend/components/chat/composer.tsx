@@ -51,7 +51,11 @@ export function Composer({
   const overLimit = value.length > MAX_LENGTH;
 
   return (
-    <div className="border-t border-border bg-surface px-4 py-3 sm:px-6">
+    /* No top border: the controls row directly above already carries one, and
+       two rules two rows apart reads as a rendering fault.
+       Weighted toward the bottom, because the composer is the last thing on the
+       page and sitting flush against the window edge makes it look clipped. */
+    <div className="bg-surface px-4 pb-6 pt-3 sm:px-6">
       <div className="mx-auto w-full max-w-3xl">
         <div
           className={cn(

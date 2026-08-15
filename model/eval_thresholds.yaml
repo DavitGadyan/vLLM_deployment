@@ -28,3 +28,30 @@ support:
     min_absolute: 0.90
   forbidden_content_rate:
     max_absolute: 0.02
+
+# Serving performance, measured by GuideLLM against a running vLLM server.
+#
+# Gated separately from quality because the two come apart in both directions: a
+# fine-tuned adapter can answer better *and* stream slower, and a change that
+# speeds generation up can quietly cost accuracy. A gate that only asks one
+# question ships the other regression.
+#
+# Relative rather than absolute where a baseline exists — "20% slower" means the
+# same thing on any hardware, "+40ms" does not. Where a number is unshippable
+# regardless of history, it gets an absolute ceiling instead: a model that was
+# already slow does not license the next one to be slower still.
+performance:
+  # First token is what a user perceives as "did it hear me". This is the one
+  # number worth a hard ceiling as well as a delta.
+  ttft_p95_ms:
+    max_relative_increase: 0.20
+  ttft_p50_ms:
+    max_relative_increase: 0.20
+  # Inter-token latency decides whether streaming reads as fluent or as
+  # stuttering. Above roughly 80ms it stops feeling like typing.
+  itl_p95_ms:
+    max_absolute: 80
+  # Throughput is the cost side of the triangle: fewer tokens per second on the
+  # same GPU is a directly higher cost per conversation.
+  output_tokens_per_second:
+    max_relative_drop: 0.15

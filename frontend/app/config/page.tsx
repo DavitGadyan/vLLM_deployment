@@ -15,7 +15,7 @@ export default async function ConfigPage() {
   ]);
 
   return (
-    <div className="mx-auto w-full max-w-7xl px-4 py-8 sm:px-6">
+    <div className="mx-auto w-full max-w-7xl px-4 pb-20 pt-8 sm:px-6">
       <PageHeader
         title="Configuration"
         description="Everything here compiles into the system prompt the model receives before every question. The preview on the right shows exactly what that looks like."

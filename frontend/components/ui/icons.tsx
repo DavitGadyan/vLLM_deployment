@@ -133,6 +133,22 @@ export const MoonIcon = (props: IconProps) => (
   </Icon>
 );
 
+export const GraphIcon = (props: IconProps) => (
+  <Icon {...props}>
+    <circle cx="6" cy="6" r="2.5" />
+    <circle cx="18" cy="7" r="2.5" />
+    <circle cx="12" cy="17" r="2.5" />
+    <path d="M8.2 7.2 15.8 16M16.9 9.3 13.4 14.8M8.3 7.6l7.4-.4" />
+  </Icon>
+);
+
+export const ChartIcon = (props: IconProps) => (
+  <Icon {...props}>
+    <path d="M3 3v16a2 2 0 0 0 2 2h16" />
+    <path d="m7 15 3.5-4.5 3 2.5L18 7" />
+  </Icon>
+);
+
 export const RollbackIcon = (props: IconProps) => (
   <Icon {...props}>
     <path d="M3 7v6h6" />

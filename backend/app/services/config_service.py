@@ -18,6 +18,7 @@ from app.core import metrics
 from app.core.logging import get_logger
 from app.db.models import ActiveConfig, ConfigVersion
 from app.schemas.config import ConfigPayload
+from app.services.audit import Action, AuditService
 from app.services.prompt_compiler import CompiledPrompt, compile_prompt
 
 log = get_logger(__name__)
@@ -62,6 +63,11 @@ def compile_payload(payload: ConfigPayload) -> CompiledPrompt:
 
 
 class ConfigService:
+    def __init__(self, audit: AuditService | None = None) -> None:
+        # Optional so existing tests can construct this without an audit service.
+        # In the running application it is always provided — see main.py.
+        self._audit = audit or AuditService()
+
     async def get_active(self, session: AsyncSession) -> ConfigVersion:
         """Return the live config, bootstrapping a default if none exists."""
         pointer = await session.get(ActiveConfig, 1)
@@ -118,8 +124,34 @@ class ConfigService:
         session.add(version)
         await session.flush()
 
+        # Audited before the commit, deliberately: the version row and its audit
+        # entry land in the same transaction, so a saved configuration with no
+        # record of who saved it is not a state this system can reach.
+        await self._audit.record(
+            session,
+            action=Action.CONFIG_SAVED,
+            actor=created_by,
+            resource_type="config_version",
+            resource_id=str(version.id),
+            detail={
+                "version": version.version,
+                "company_name": version.company_name,
+                "change_note": version.change_note,
+                "prompt_hash": version.compiled_prompt_hash,
+                "prompt_tokens": version.compiled_prompt_tokens,
+            },
+        )
+
         if activate:
             await self._set_active(session, version, activated_by=created_by)
+            await self._audit.record(
+                session,
+                action=Action.CONFIG_ACTIVATED,
+                actor=created_by,
+                resource_type="config_version",
+                resource_id=str(version.id),
+                detail={"version": version.version, "via": "save"},
+            )
 
         await session.commit()
         await session.refresh(version)
@@ -142,6 +174,18 @@ class ConfigService:
             return None
 
         await self._set_active(session, version, activated_by=activated_by)
+
+        # A rollback is an activation of an older version, so it is the same
+        # event. `via` distinguishes them, which is what makes "how often do we
+        # roll back?" answerable from the log.
+        await self._audit.record(
+            session,
+            action=Action.CONFIG_ACTIVATED,
+            actor=activated_by,
+            resource_type="config_version",
+            resource_id=str(version.id),
+            detail={"version": version.version, "via": "manual_activation"},
+        )
         await session.commit()
 
         log.info("config_activated", version=version.version, by=activated_by)

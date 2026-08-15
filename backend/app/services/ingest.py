@@ -14,6 +14,7 @@ from app.core.logging import get_logger
 from app.core.settings import Settings
 from app.db.models import Chunk, Document
 from app.services import chunking
+from app.services.audit import Action, AuditService
 from app.services.embeddings import EmbeddingClient
 
 log = get_logger(__name__)
@@ -30,10 +31,12 @@ class IngestService:
         settings: Settings,
         embeddings: EmbeddingClient,
         session_factory: async_sessionmaker[AsyncSession],
+        audit: AuditService | None = None,
     ) -> None:
         self._settings = settings
         self._embeddings = embeddings
         self._session_factory = session_factory
+        self._audit = audit or AuditService()
 
     async def register(
         self,
@@ -68,6 +71,25 @@ class IngestService:
             status="pending",
         )
         session.add(document)
+
+        # What the assistant is permitted to read is a data-processing decision,
+        # so uploads are audited alongside configuration changes. The content
+        # hash is recorded rather than the content: it proves which file this was
+        # without copying customer data into the audit log.
+        await self._audit.record(
+            session,
+            action=Action.DOCUMENT_UPLOADED,
+            resource_type="document",
+            resource_id=str(document.id),
+            detail={
+                "title": document.title,
+                "filename": document.filename,
+                "content_type": document.content_type,
+                "size_bytes": document.size_bytes,
+                "content_hash": content_hash,
+            },
+        )
+
         await session.commit()
         await session.refresh(document)
         return document, True
@@ -149,6 +171,22 @@ class IngestService:
         document = await session.get(Document, document_id)
         if document is None:
             return False
+
+        # Recorded before the delete, while the row still exists to describe.
+        # This is the event a GDPR Art. 17 erasure request is evidenced by, so
+        # losing it would defeat the point of deleting on request.
+        await self._audit.record(
+            session,
+            action=Action.DOCUMENT_DELETED,
+            resource_type="document",
+            resource_id=str(document.id),
+            detail={
+                "title": document.title,
+                "filename": document.filename,
+                "chunks_removed": document.chunk_count,
+            },
+        )
+
         await session.delete(document)
         await session.commit()
         log.info("document_deleted", document_id=str(document_id))

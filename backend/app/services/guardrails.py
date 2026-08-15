@@ -55,6 +55,16 @@ _SPECIFIC_CLAIM = re.compile(
 )
 
 
+# What the customer is told when a dependency the answer needs is unreachable.
+# Deliberately says nothing about which one: the customer cannot act on
+# "the embedding service is down", and naming internal components to the public
+# is how infrastructure gets mapped. The specific cause is logged and counted.
+UPSTREAM_ERROR_MESSAGE = (
+    "I can't reach the systems I need to answer that reliably right now, and I "
+    "don't want to guess. I'm passing you to a member of the team who can help."
+)
+
+
 @dataclass(frozen=True)
 class PreflightDecision:
     """Whether to escalate before spending a GPU request."""

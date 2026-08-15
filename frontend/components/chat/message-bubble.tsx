@@ -3,6 +3,7 @@
 import * as React from "react";
 
 import { CitationChip } from "@/components/chat/citation-chip";
+import { FeedbackBar } from "@/components/chat/feedback-bar";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { AlertIcon, CheckIcon, CopyIcon, RetryIcon, UserIcon } from "@/components/ui/icons";
@@ -18,9 +19,11 @@ const ESCALATION_COPY: Record<string, string> = {
 
 export function MessageBubble({
   message,
+  conversationId,
   onRetry,
 }: {
   message: ChatMessage;
+  conversationId?: string | null;
   onRetry?: () => void;
 }) {
   if (message.role === "user") {
@@ -74,7 +77,14 @@ export function MessageBubble({
       ) : null}
 
       {!message.streaming && message.content ? (
-        <MessageFooter message={message} />
+        <>
+          <MessageFooter message={message} />
+          {/* Offered only on a finished answer. Asking for a verdict on half a
+              response would collect a judgement about something nobody read. */}
+          {!message.error ? (
+            <FeedbackBar conversationId={conversationId ?? null} messageId={message.id} />
+          ) : null}
+        </>
       ) : null}
     </div>
   );

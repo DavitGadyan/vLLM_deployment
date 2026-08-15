@@ -108,6 +108,37 @@ active_config_version = Gauge(
 
 # --- Ingestion -------------------------------------------------------------
 
+# --- Security ---------------------------------------------------------------
+# The prompt compiler defends against injection; these make the defence visible.
+# Without them the security dashboard could only assert that a control exists.
+
+injection_attempts_total = Counter(
+    "support_injection_attempts_total",
+    "Prompt-injection patterns detected, by where they arrived and how severe",
+    # surface: user_message | retrieved_document
+    # A hit on retrieved_document is materially worse than one on user_message:
+    # it means an indexed company document contains an injection payload.
+    ["surface", "severity", "rule"],
+)
+
+pii_redactions_total = Counter(
+    "support_pii_redactions_total",
+    "PII values replaced before persistence, by category",
+    ["category"],
+)
+
+auth_events_total = Counter(
+    "support_auth_events_total",
+    "Authentication and authorization outcomes",
+    ["event", "outcome"],
+)
+
+audit_events_total = Counter(
+    "support_audit_events_total",
+    "Audit entries appended, by action and outcome",
+    ["action", "outcome"],
+)
+
 documents_ingested_total = Counter(
     "support_documents_ingested_total",
     "Document ingestion attempts by outcome",
@@ -117,4 +148,29 @@ documents_ingested_total = Counter(
 chunks_indexed_total = Counter(
     "support_chunks_indexed_total",
     "Chunks embedded and written to the vector index",
+)
+
+# --- Alignment feedback -----------------------------------------------------
+# The signal the next model version is trained on. Measured here as well as
+# stored, because the useful question during a rollout is a rate over time
+# ("did the thumbs-down rate move after we shipped v12?"), and that is a
+# time-series question rather than a database one.
+
+feedback_total = Counter(
+    "support_feedback_total",
+    "Human judgements received, by kind and verdict",
+    # kind: rating | preference | comment
+    # verdict: up | down | a | b | none
+    ["kind", "verdict"],
+)
+
+feedback_preference_wins_total = Counter(
+    "support_feedback_preference_wins_total",
+    "Head-to-head wins by variant, for A/B answer comparisons",
+    ["variant"],
+)
+
+feedback_pending_export = Gauge(
+    "support_feedback_pending_export",
+    "Judgements collected but not yet consumed by a training run",
 )

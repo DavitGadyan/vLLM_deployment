@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import pytest
 
+from app.services import guardrails
 from app.services.assembler import RetrievedChunk
 from app.services.guardrails import (
     EscalationReason,
@@ -149,3 +150,18 @@ def test_escalating_answer_is_not_flagged_as_ungrounded() -> None:
     assert analysis.escalated
     assert analysis.reason is EscalationReason.MODEL_SENTINEL
     assert not analysis.ungrounded_claim
+
+
+def test_upstream_error_message_names_no_internal_component() -> None:
+    """
+    A dependency outage is told to the customer as a handoff, not as a stack
+    trace. Naming the embedding service or the model server would give a caller
+    a map of the internals and tells them nothing they can act on — the specific
+    cause belongs in the logs and the security dashboard, which is where it goes.
+    """
+    message = guardrails.UPSTREAM_ERROR_MESSAGE.lower()
+    for internal in ("embedding", "vllm", "postgres", "gpu", "http", "error", "exception"):
+        assert internal not in message, f"customer-facing copy leaks {internal!r}"
+
+    # It still has to do the one job it exists for: say a person is taking over.
+    assert "team" in message

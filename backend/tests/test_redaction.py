@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from app.core.redaction import contains_pii, redact
+from app.core.redaction import contains_pii, redact, redact_counted
 
 
 @pytest.mark.parametrize(
@@ -51,3 +51,35 @@ def test_multiple_items_in_one_message() -> None:
 
 def test_empty_input() -> None:
     assert redact("") == ""
+
+
+# ---------------------------------------------------------------------------
+# Counting — the security dashboard and the audit log depend on these numbers
+# ---------------------------------------------------------------------------
+
+
+def test_counts_each_category_found() -> None:
+    text, counts = redact_counted(
+        "Email jane@example.com or call 555-123-4567, card 4111 1111 1111 1111"
+    )
+    assert counts == {"email": 1, "phone": 1, "card": 1}
+    assert "jane@example.com" not in text
+
+
+def test_counts_repeated_values() -> None:
+    """A message listing three emails is three redactions, not one."""
+    _, counts = redact_counted("a@x.com, b@y.com and c@z.com")
+    assert counts["email"] == 3
+
+
+def test_clean_text_counts_nothing() -> None:
+    """A zero here must mean "no PII present", never "the regex broke"."""
+    text, counts = redact_counted("How long does express shipping take?")
+    assert counts == {}
+    assert text == "How long does express shipping take?"
+
+
+def test_counted_and_uncounted_redaction_agree() -> None:
+    """`redact` delegates to `redact_counted`, so the two can never diverge."""
+    sample = "Reach me at jane@example.com or 555-123-4567"
+    assert redact(sample) == redact_counted(sample)[0]

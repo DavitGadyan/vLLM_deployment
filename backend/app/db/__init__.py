@@ -1,5 +1,6 @@
 from app.db.models import (
     ActiveConfig,
+    AuditEvent,
     Base,
     Chunk,
     ConfigVersion,
@@ -10,6 +11,7 @@ from app.db.models import (
 
 __all__ = [
     "ActiveConfig",
+    "AuditEvent",
     "Base",
     "Chunk",
     "ConfigVersion",

@@ -37,6 +37,14 @@ function emptyAssistant(): ChatMessage {
 export interface UseChatResult {
   messages: ChatMessage[];
   isStreaming: boolean;
+  /**
+   * The server-assigned conversation id, once one exists.
+   *
+   * Exposed because feedback is attached to a conversation, and the id only
+   * arrives on the `start` frame of the first exchange — a caller that guessed
+   * it would silently record judgements against nothing.
+   */
+  conversationId: string | null;
   send: (text: string) => Promise<void>;
   stop: () => void;
   retryLast: () => Promise<void>;
@@ -46,7 +54,11 @@ export interface UseChatResult {
 export function useChat(): UseChatResult {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [isStreaming, setIsStreaming] = useState(false);
+  // Kept in both a ref and state on purpose: `run` reads the ref synchronously
+  // while building the next request body, and consumers need the state to
+  // re-render once an id exists.
   const conversationId = useRef<string | null>(null);
+  const [conversationIdValue, setConversationIdValue] = useState<string | null>(null);
   const abortRef = useRef<AbortController | null>(null);
   const lastQuestion = useRef<string | null>(null);
 
@@ -129,6 +141,7 @@ export function useChat(): UseChatResult {
             switch (event.type) {
               case "start":
                 conversationId.current = event.data.conversation_id;
+                setConversationIdValue(event.data.conversation_id);
                 break;
               case "citations":
                 patchLast({ sources: event.data.sources });
@@ -235,9 +248,18 @@ export function useChat(): UseChatResult {
   const reset = useCallback(() => {
     abortRef.current?.abort();
     conversationId.current = null;
+    setConversationIdValue(null);
     lastQuestion.current = null;
     setMessages([]);
   }, []);
 
-  return { messages, isStreaming, send, stop, retryLast, reset };
+  return {
+    messages,
+    isStreaming,
+    conversationId: conversationIdValue,
+    send,
+    stop,
+    retryLast,
+    reset,
+  };
 }

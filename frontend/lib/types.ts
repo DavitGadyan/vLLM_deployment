@@ -138,3 +138,45 @@ export type StreamEvent =
       };
     }
   | { type: "error"; data: { message: string; retryable?: boolean } };
+
+/** Feedback payloads, mirroring `backend/app/schemas/feedback.py`. */
+export type FeedbackPayload =
+  | {
+      kind: "rating";
+      conversation_id: string;
+      message_id?: string | null;
+      rating: 1 | -1;
+      comment?: string | null;
+    }
+  | {
+      kind: "comment";
+      conversation_id: string;
+      message_id?: string | null;
+      comment: string;
+    }
+  | {
+      kind: "preference";
+      conversation_id?: string | null;
+      question: string;
+      chosen_answer: string;
+      rejected_answer: string;
+      chosen_variant?: string | null;
+      variant_params?: Record<string, unknown> | null;
+      comment?: string | null;
+    };
+
+export interface AnswerVariant {
+  label: "A" | "B";
+  content: string;
+  citations: Source[];
+  escalated: boolean;
+  params: Record<string, unknown>;
+  total_ms: number | null;
+}
+
+export interface CompareResult {
+  question: string;
+  conversation_id: string | null;
+  config_version: number | null;
+  variants: AnswerVariant[];
+}

@@ -1,0 +1,17 @@
+% Included at the end of the LaTeX preamble by build-prompt-pdfs.sh.
+
+% Keep long code lines, URLs and table cells from running into the margin.
+\setlength{\emergencystretch}{3em}
+
+% NOTE ON COPY-PASTE
+%
+% xelatex applies the font's common ligatures, so "flight" is set with U+FB02
+% and copies out of the PDF as "ﬂight". Disabling this was attempted via
+% Ligatures=NoCommon and via RawFeature={-liga,-clig}; neither took effect,
+% because pandoc emits \defaultfontfeatures[\rmfamily]{Ligatures=TeX,...}
+% earlier in the preamble and that interaction wins.
+%
+% Not pursued further, because the fix is unnecessary: the PDFs are for reading
+% and sharing, and the .md files next to them are the copy source. The README
+% says so. Left documented rather than silently accepted, so the next person
+% does not repeat the same three attempts.

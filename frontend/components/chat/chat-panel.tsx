@@ -2,6 +2,7 @@
 
 import * as React from "react";
 
+import { ComparePanel } from "@/components/chat/compare-panel";
 import { Composer } from "@/components/chat/composer";
 import { MessageBubble } from "@/components/chat/message-bubble";
 import { Button } from "@/components/ui/button";
@@ -15,7 +16,9 @@ const SUGGESTIONS = [
 ];
 
 export function ChatPanel() {
-  const { messages, isStreaming, send, stop, retryLast, reset } = useChat();
+  const { messages, isStreaming, conversationId, send, stop, retryLast, reset } =
+    useChat();
+  const [comparing, setComparing] = React.useState(false);
   const endRef = React.useRef<HTMLDivElement>(null);
   const scrollRef = React.useRef<HTMLDivElement>(null);
   const pinnedToBottom = React.useRef(true);
@@ -44,7 +47,7 @@ export function ChatPanel() {
   const isEmpty = messages.length === 0;
 
   return (
-    <div className="flex h-[calc(100dvh-3.5rem)] flex-col">
+    <div className="flex h-full flex-col">
       <div ref={scrollRef} className="flex-1 overflow-y-auto">
         <div className="mx-auto w-full max-w-3xl px-4 py-6 sm:px-6">
           {isEmpty ? (
@@ -60,6 +63,7 @@ export function ChatPanel() {
                 <MessageBubble
                   key={message.id}
                   message={message}
+                  conversationId={conversationId}
                   onRetry={
                     index === messages.length - 1 && message.error
                       ? retryLast
@@ -73,15 +77,37 @@ export function ChatPanel() {
         </div>
       </div>
 
-      {!isEmpty ? (
-        <div className="border-t border-border bg-surface px-4 py-2 sm:px-6">
-          <div className="mx-auto flex w-full max-w-3xl justify-end">
-            <Button variant="ghost" size="sm" onClick={reset}>
-              New conversation
-            </Button>
+      {comparing ? (
+        <div className="border-t border-border bg-surface-sunken px-4 py-4 sm:px-6">
+          <div className="mx-auto w-full max-w-3xl">
+            <ComparePanel conversationId={conversationId} />
           </div>
         </div>
       ) : null}
+
+      {/* Both controls sit on one right-aligned row above the composer rather
+          than in a bar of their own. A single button alone on a full-width
+          strip reads as something left behind, not as a deliberate control. */}
+      <div className="border-t border-border bg-surface px-4 pt-2 sm:px-6">
+        <div className="mx-auto flex w-full max-w-3xl items-center justify-end gap-1">
+          {/* Not hidden behind a settings menu: collecting preference pairs is
+              the operator activity this console exists to make routine. */}
+          <Button
+            variant={comparing ? "primary" : "ghost"}
+            size="sm"
+            onClick={() => setComparing((value) => !value)}
+            aria-pressed={comparing}
+          >
+            {comparing ? "Hide comparison" : "Compare two answers"}
+          </Button>
+
+          {!isEmpty ? (
+            <Button variant="ghost" size="sm" onClick={reset}>
+              New conversation
+            </Button>
+          ) : null}
+        </div>
+      </div>
 
       <Composer onSend={send} onStop={stop} isStreaming={isStreaming} />
     </div>

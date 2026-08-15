@@ -23,8 +23,9 @@ import argparse
 import json
 import random
 import sys
+from collections.abc import Iterator
 from pathlib import Path
-from typing import Any, Iterator
+from typing import Any
 
 SUPPORT_DATASET = "bitext/Bitext-customer-support-llm-chatbot-training-dataset"
 GENERAL_DATASET = "HuggingFaceH4/ultrachat_200k"

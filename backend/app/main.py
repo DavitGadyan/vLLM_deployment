@@ -17,9 +17,12 @@ from app.core import metrics
 from app.core.logging import configure_logging, get_logger, request_id_var
 from app.core.settings import get_settings
 from app.db.session import dispose_engine, get_session_factory
+from app.services.audit import AuditService
 from app.services.chat_service import ChatService
 from app.services.config_service import ConfigService
+from app.services.dashboard import DashboardService
 from app.services.embeddings import EmbeddingClient
+from app.services.feedback import FeedbackService
 from app.services.ingest import IngestService
 from app.services.llm_client import LLMClient
 from app.services.retriever import Retriever
@@ -36,16 +39,23 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     embedding_client = EmbeddingClient(settings)
     llm_client = LLMClient(settings)
     retriever = Retriever(settings, embedding_client)
-    config_service = ConfigService()
+    audit_service = AuditService()
+    config_service = ConfigService(audit_service)
 
     app.state.settings = settings
     app.state.embedding_client = embedding_client
     app.state.llm_client = llm_client
     app.state.retriever = retriever
     app.state.config_service = config_service
-    app.state.ingest_service = IngestService(settings, embedding_client, session_factory)
+    app.state.audit_service = audit_service
+    feedback_service = FeedbackService(audit_service)
+    app.state.feedback_service = feedback_service
+    app.state.dashboard_service = DashboardService(settings, audit_service, feedback_service)
+    app.state.ingest_service = IngestService(
+        settings, embedding_client, session_factory, audit_service
+    )
     app.state.chat_service = ChatService(
-        settings, llm_client, retriever, config_service, session_factory
+        settings, llm_client, retriever, config_service, session_factory, audit_service
     )
 
     # Publish the active config's prompt length at startup so the prefix-token

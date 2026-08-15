@@ -48,6 +48,25 @@ MAX_NUM_SEQS="${MAX_NUM_SEQS:-64}"
 # inter-token latency for everyone already streaming.
 MAX_NUM_BATCHED_TOKENS="${MAX_NUM_BATCHED_TOKENS:-8192}"
 
+# --- PagedAttention block size ---------------------------------------------
+# PagedAttention is not a flag — it is how vLLM stores KV at all. Instead of one
+# contiguous buffer per sequence sized for the worst case, KV lives in fixed-size
+# blocks drawn from a shared pool, exactly like virtual memory pages. That is
+# what removes the internal fragmentation that otherwise wastes most of the KV
+# cache, and it is the precondition for both prefix caching (blocks are shared
+# between sequences by reference) and continuous batching (sequences join and
+# leave without compacting anything).
+#
+# The block size is the one knob it exposes, and it is stated here for the same
+# reason as the flags below: the tuning surface should be visible in one place.
+# 16 is vLLM's default and the right default here. Smaller blocks waste less on
+# the last partial block of each sequence but cost more per-block bookkeeping;
+# larger blocks reduce that overhead but round every sequence up further, and on
+# short support turns that rounding is pure loss. Prefix-cache hits are also
+# block-aligned, so a larger block means a longer shared prefix is needed before
+# anything is reused at all.
+BLOCK_SIZE="${BLOCK_SIZE:-16}"
+
 # --- KV cache dtype --------------------------------------------------------
 # 'auto' (fp16) by default, deliberately.
 #
@@ -90,6 +109,8 @@ args=(
   --max-num-seqs "${MAX_NUM_SEQS}"
   --max-num-batched-tokens "${MAX_NUM_BATCHED_TOKENS}"
   --kv-cache-dtype "${KV_CACHE_DTYPE}"
+  # PagedAttention's page size. Always active; see BLOCK_SIZE above.
+  --block-size "${BLOCK_SIZE}"
   # Stated explicitly even though the V1 engine defaults them on, so the full
   # tuning surface is visible in one place.
   --enable-prefix-caching

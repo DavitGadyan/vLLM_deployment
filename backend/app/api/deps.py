@@ -14,9 +14,12 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.settings import Settings, get_settings
 from app.db.session import get_session
+from app.services.audit import AuditService
 from app.services.chat_service import ChatService
 from app.services.config_service import ConfigService
+from app.services.dashboard import DashboardService
 from app.services.embeddings import EmbeddingClient
+from app.services.feedback import FeedbackService
 from app.services.ingest import IngestService
 from app.services.llm_client import LLMClient
 from app.services.retriever import Retriever
@@ -50,6 +53,18 @@ def ingest_service(request: Request) -> IngestService:
     return request.app.state.ingest_service  # type: ignore[no-any-return]
 
 
+def audit_service(request: Request) -> AuditService:
+    return request.app.state.audit_service  # type: ignore[no-any-return]
+
+
+def dashboard_service(request: Request) -> DashboardService:
+    return request.app.state.dashboard_service  # type: ignore[no-any-return]
+
+
+def feedback_service(request: Request) -> FeedbackService:
+    return request.app.state.feedback_service  # type: ignore[no-any-return]
+
+
 def operator(request: Request) -> str | None:
     """Identity recorded on config versions.
 
@@ -69,4 +84,7 @@ RetrieverDep = Annotated[Retriever, Depends(retriever)]
 ConfigServiceDep = Annotated[ConfigService, Depends(config_service)]
 ChatServiceDep = Annotated[ChatService, Depends(chat_service)]
 IngestServiceDep = Annotated[IngestService, Depends(ingest_service)]
+AuditServiceDep = Annotated[AuditService, Depends(audit_service)]
+DashboardServiceDep = Annotated[DashboardService, Depends(dashboard_service)]
+FeedbackServiceDep = Annotated[FeedbackService, Depends(feedback_service)]
 OperatorDep = Annotated[str | None, Depends(operator)]

@@ -18,6 +18,7 @@ out/
 *.tsbuildinfo
 playwright-report/
 test-results/
+.playwright-mcp/
 coverage/
 
 # Model artifacts — never commit weights

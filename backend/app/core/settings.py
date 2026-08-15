@@ -40,6 +40,15 @@ class Settings(BaseSettings):
     # conversation history and force truncation of the actual question.
     max_context_tokens: int = 3000
 
+    # --- Monitoring dashboard ---------------------------------------------
+    # When set and reachable, the Monitoring tab reads real time series from
+    # Prometheus. When unset — the normal case on a laptop, and during a demo
+    # recording — the API returns a deterministic seeded dataset and labels the
+    # response `source: "demo"` so the UI can say so. Synthetic numbers are never
+    # presented as live ones.
+    prometheus_url: str | None = None
+    prometheus_timeout_seconds: float = 5.0
+
     # --- Database ---------------------------------------------------------
     database_url: str = "postgresql+asyncpg://support:support-dev-password@postgres:5432/support"
     db_pool_size: int = 10
